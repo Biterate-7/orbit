@@ -1,0 +1,225 @@
+import { bayer, hexToRgb } from '../math';
+import { Noise2D, Rng } from '../rng';
+import { ctx2d, makeCanvas } from './pixel';
+
+const STAR_COLORS = ['#e8f0ff', '#e8f0ff', '#e8f0ff', '#bfd0ff', '#9fb4ff', '#7ffcff', '#c9a8ff', '#ffd8a8'];
+
+/** Three-layer parallax pixel starfield with twinkle, warp streaks and black-hole lensing. */
+export class Starfield {
+  private n = 0;
+  private x = new Float32Array(0);
+  private y = new Float32Array(0);
+  private depth = new Float32Array(0);
+  private color = new Uint8Array(0);
+  private tw = new Float32Array(0);
+  private big = new Uint8Array(0);
+  private W = 1;
+  private H = 1;
+  private seed: number;
+
+  constructor(seed: number) {
+    this.seed = seed;
+  }
+
+  resize(vw: number, vh: number): void {
+    const margin = 40;
+    this.W = vw + margin * 2;
+    this.H = vh + margin * 2;
+    const rng = new Rng(this.seed);
+    this.n = Math.floor((this.W * this.H) / 520);
+    this.x = new Float32Array(this.n);
+    this.y = new Float32Array(this.n);
+    this.depth = new Float32Array(this.n);
+    this.color = new Uint8Array(this.n);
+    this.tw = new Float32Array(this.n);
+    this.big = new Uint8Array(this.n);
+    for (let i = 0; i < this.n; i++) {
+      this.x[i] = rng.range(0, this.W);
+      this.y[i] = rng.range(0, this.H);
+      const layer = rng.next();
+      this.depth[i] = layer < 0.6 ? 0.04 : layer < 0.9 ? 0.1 : 0.2;
+      this.color[i] = rng.int(0, STAR_COLORS.length - 1);
+      this.tw[i] = rng.chance(0.3) ? rng.range(0.6, 3.2) : 0;
+      this.big[i] = rng.chance(0.025) ? 1 : 0;
+    }
+  }
+
+  draw(
+    ctx: CanvasRenderingContext2D,
+    vw: number,
+    vh: number,
+    camPx: number,
+    camPy: number,
+    time: number,
+    warp: number,
+    lens: { x: number; y: number; r: number } | null,
+    dim: number,
+  ): void {
+    const margin = (this.W - vw) / 2;
+    const cx = vw / 2;
+    const cy = vh / 2;
+    for (let i = 0; i < this.n; i++) {
+      const dpt = this.depth[i];
+      let sx = this.x[i] - camPx * dpt;
+      let sy = this.y[i] - camPy * dpt;
+      sx = ((sx % this.W) + this.W) % this.W - margin;
+      sy = ((sy % this.H) + this.H) % this.H - margin;
+      if (sx < -2 || sy < -2 || sx > vw + 2 || sy > vh + 2) continue;
+      let a = dpt > 0.15 ? 1 : dpt > 0.08 ? 0.75 : 0.5;
+      if (this.tw[i] > 0) {
+        const t = Math.sin(time * this.tw[i] + i * 1.7);
+        a *= t > 0.6 ? 1 : t > -0.3 ? 0.6 : 0.25;
+      }
+      a *= dim;
+      if (lens) {
+        const dx = sx - lens.x;
+        const dy = sy - lens.y;
+        const d = Math.hypot(dx, dy);
+        if (d < lens.r * 3 && d > 0.5) {
+          const nd = d + (lens.r * lens.r) / d;
+          sx = lens.x + (dx / d) * nd;
+          sy = lens.y + (dy / d) * nd;
+          if (nd < lens.r * 1.4) a = Math.min(1, a * 1.8);
+        }
+      }
+      ctx.globalAlpha = a;
+      ctx.fillStyle = STAR_COLORS[this.color[i]];
+      const px = Math.round(sx);
+      const py = Math.round(sy);
+      if (warp > 0.02) {
+        const dx = sx - cx;
+        const dy = sy - cy;
+        const d = Math.hypot(dx, dy) || 1;
+        const len = Math.floor(warp * (6 + 60 * dpt * 5) * (0.3 + d / Math.max(vw, vh)));
+        for (let s = 0; s < len; s++) {
+          ctx.fillRect(Math.round(px + (dx / d) * s), Math.round(py + (dy / d) * s), 1, 1);
+        }
+      } else if (this.big[i]) {
+        ctx.fillRect(px, py, 1, 1);
+        ctx.globalAlpha = a * 0.5;
+        ctx.fillRect(px - 1, py, 1, 1);
+        ctx.fillRect(px + 1, py, 1, 1);
+        ctx.fillRect(px, py - 1, 1, 1);
+        ctx.fillRect(px, py + 1, 1, 1);
+      } else {
+        ctx.fillRect(px, py, 1, 1);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+/** Dithered pixel nebula rendered at half resolution, regenerated per level / resize. */
+export class NebulaLayer {
+  canvas: HTMLCanvasElement | null = null;
+  private key = '';
+
+  build(vw: number, vh: number, seed: number, colorA: string, colorB: string, strength: number): void {
+    const key = `${vw}x${vh}:${seed}:${colorA}:${colorB}:${strength}`;
+    if (key === this.key) return;
+    this.key = key;
+    const w = Math.ceil(vw / 2) + 24;
+    const h = Math.ceil(vh / 2) + 24;
+    const c = makeCanvas(w, h);
+    const g = ctx2d(c);
+    const img = g.createImageData(w, h);
+    const n = new Noise2D(seed);
+    const A = hexToRgb(colorA);
+    const B = hexToRgb(colorB);
+    const sc = 1 / 70;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const wx = n.fbm(x * sc * 0.7 + 11, y * sc * 0.7 + 3, 2) * 2.5;
+        const v = n.fbm(x * sc + wx, y * sc - wx * 0.6, 4);
+        const mix = n.get(x * sc * 0.5 + 40, y * sc * 0.5 + 9);
+        const dens = Math.max(0, v - 0.42) * 2.6 * strength;
+        const lv = Math.floor(dens * 4 + bayer(x, y) - 0.5);
+        if (lv <= 0) continue;
+        const col = mix > 0.5 ? A : B;
+        const i = (y * w + x) * 4;
+        img.data[i] = col[0];
+        img.data[i + 1] = col[1];
+        img.data[i + 2] = col[2];
+        img.data[i + 3] = Math.min(255, lv * 34);
+      }
+    }
+    g.putImageData(img, 0, 0);
+    this.canvas = c;
+  }
+
+  draw(ctx: CanvasRenderingContext2D, camPx: number, camPy: number, time: number, alpha: number): void {
+    if (!this.canvas || alpha <= 0) return;
+    const ox = Math.round(-12 - camPx * 0.03 + Math.sin(time * 0.05) * 4);
+    const oy = Math.round(-12 - camPy * 0.03 + Math.cos(time * 0.04) * 3);
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(this.canvas, ox * 2, oy * 2, this.canvas.width * 2, this.canvas.height * 2);
+    ctx.globalAlpha = 1;
+  }
+}
+
+/** Screen-door dithered fog with a clear bubble around the ship (nebula visibility). */
+export class FogLayer {
+  private canvas: HTMLCanvasElement | null = null;
+  private ctx: CanvasRenderingContext2D | null = null;
+  private img: ImageData | null = null;
+  private w = 0;
+  private h = 0;
+
+  private ensure(vw: number, vh: number): void {
+    const w = Math.ceil(vw / 2);
+    const h = Math.ceil(vh / 2);
+    if (this.canvas && w === this.w && h === this.h) return;
+    this.w = w;
+    this.h = h;
+    this.canvas = makeCanvas(w, h);
+    this.ctx = ctx2d(this.canvas);
+    this.img = this.ctx.createImageData(w, h);
+  }
+
+  draw(
+    ctx: CanvasRenderingContext2D,
+    vw: number,
+    vh: number,
+    holes: { x: number; y: number; r: number }[],
+    color: string,
+    density: number,
+    time: number,
+  ): void {
+    if (density <= 0) return;
+    this.ensure(vw, vh);
+    const img = this.img!;
+    const d = img.data;
+    const [cr, cg, cb] = hexToRgb(color);
+    const w = this.w;
+    const h = this.h;
+    // Uniform translucent haze; dithering only where the clear bubbles fade out, which keeps it crisp.
+    const alpha = Math.round(255 * Math.min(1, density));
+    const swirl = time * 0.6;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let cover = 1;
+        for (const hole of holes) {
+          const dx = x * 2 - hole.x;
+          const dy = y * 2 - hole.y;
+          const wob = 1 + 0.06 * Math.sin(Math.atan2(dy, dx) * 5 + swirl);
+          const dd = Math.sqrt(dx * dx + dy * dy) / (hole.r * wob);
+          if (dd < 1) {
+            const k = dd < 0.6 ? 0 : (dd - 0.6) / 0.4;
+            if (k < cover) cover = k;
+          }
+        }
+        const i = (y * w + x) * 4;
+        if (cover >= 1 || cover > bayer(x, y)) {
+          d[i] = cr;
+          d[i + 1] = cg;
+          d[i + 2] = cb;
+          d[i + 3] = alpha;
+        } else {
+          d[i + 3] = 0;
+        }
+      }
+    }
+    this.ctx!.putImageData(img, 0, 0);
+    ctx.drawImage(this.canvas!, 0, 0, w * 2, h * 2);
+  }
+}

@@ -1,0 +1,161 @@
+import type { PermanentId, UpgradeId } from './types';
+import { BASE_UNLOCKED, UPGRADE_ORDER } from './upgrades';
+
+export interface Settings {
+  masterVolume: number;
+  muted: boolean;
+  sfx: boolean;
+  ambience: boolean;
+  screenShake: boolean;
+  reducedEffects: boolean;
+  sensitivity: number;
+  autoPause: boolean;
+  touchControls: 'auto' | 'on' | 'off';
+}
+
+export interface Records {
+  highestLevel: number;
+  bestTime: number;
+  bestScore: number;
+  totalRuns: number;
+  lifetimeEnergy: number;
+  lifetimeTime: number;
+  asteroidsAvoided: number;
+  asteroidsDestroyed: number;
+}
+
+export interface SaveData {
+  version: 1;
+  records: Records;
+  credits: number;
+  permanent: Record<PermanentId, number>;
+  unlocked: UpgradeId[];
+  settings: Settings;
+}
+
+const KEY = 'orbitlost.save.v1';
+
+export const DEFAULT_SETTINGS: Settings = {
+  masterVolume: 0.7,
+  muted: false,
+  sfx: true,
+  ambience: true,
+  screenShake: true,
+  reducedEffects: false,
+  sensitivity: 1,
+  autoPause: true,
+  touchControls: 'auto',
+};
+
+export function defaultSave(): SaveData {
+  return {
+    version: 1,
+    records: {
+      highestLevel: 0,
+      bestTime: 0,
+      bestScore: 0,
+      totalRuns: 0,
+      lifetimeEnergy: 0,
+      lifetimeTime: 0,
+      asteroidsAvoided: 0,
+      asteroidsDestroyed: 0,
+    },
+    credits: 0,
+    permanent: { thrusters: 0, hull: 0, collector: 0, shields: 0, reactor: 0 },
+    unlocked: [...BASE_UNLOCKED],
+    settings: { ...DEFAULT_SETTINGS },
+  };
+}
+
+const num = (v: unknown, fallback: number, lo = -Infinity, hi = Infinity): number =>
+  typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : fallback;
+const bool = (v: unknown, fallback: boolean): boolean => (typeof v === 'boolean' ? v : fallback);
+
+/** Defensive parse: tolerate missing / corrupt fields from older or edited saves. */
+function sanitize(raw: unknown): SaveData {
+  const d = defaultSave();
+  if (!raw || typeof raw !== 'object') return d;
+  const r = raw as Partial<SaveData>;
+  const rec = (r.records ?? {}) as Partial<Records>;
+  for (const k of Object.keys(d.records) as (keyof Records)[]) d.records[k] = num(rec[k], 0, 0);
+  d.credits = Math.floor(num(r.credits, 0, 0));
+  const perm = (r.permanent ?? {}) as Partial<Record<PermanentId, number>>;
+  for (const k of Object.keys(d.permanent) as PermanentId[]) d.permanent[k] = Math.floor(num(perm[k], 0, 0, 5));
+  if (Array.isArray(r.unlocked)) {
+    const set = new Set<UpgradeId>(BASE_UNLOCKED);
+    for (const u of r.unlocked) if ((UPGRADE_ORDER as string[]).includes(u)) set.add(u);
+    d.unlocked = UPGRADE_ORDER.filter((u) => set.has(u));
+  }
+  const s = (r.settings ?? {}) as Partial<Settings>;
+  d.settings = {
+    masterVolume: num(s.masterVolume, DEFAULT_SETTINGS.masterVolume, 0, 1),
+    muted: bool(s.muted, DEFAULT_SETTINGS.muted),
+    sfx: bool(s.sfx, DEFAULT_SETTINGS.sfx),
+    ambience: bool(s.ambience, DEFAULT_SETTINGS.ambience),
+    screenShake: bool(s.screenShake, DEFAULT_SETTINGS.screenShake),
+    reducedEffects: bool(s.reducedEffects, DEFAULT_SETTINGS.reducedEffects),
+    sensitivity: num(s.sensitivity, DEFAULT_SETTINGS.sensitivity, 0.5, 1.5),
+    autoPause: bool(s.autoPause, DEFAULT_SETTINGS.autoPause),
+    touchControls: s.touchControls === 'on' || s.touchControls === 'off' ? s.touchControls : 'auto',
+  };
+  return d;
+}
+
+type Listener = () => void;
+
+/** Tiny observable store backed by localStorage. Snapshots are immutable (replaced on every update). */
+export class SaveStore {
+  private data: SaveData;
+  private listeners = new Set<Listener>();
+
+  constructor() {
+    this.data = SaveStore.load();
+  }
+
+  static load(): SaveData {
+    try {
+      const raw = window.localStorage.getItem(KEY);
+      if (!raw) return defaultSave();
+      return sanitize(JSON.parse(raw));
+    } catch {
+      return defaultSave();
+    }
+  }
+
+  private persist(): void {
+    try {
+      window.localStorage.setItem(KEY, JSON.stringify(this.data));
+    } catch {
+      // Storage may be full or blocked (private mode). The game keeps working in-memory.
+    }
+  }
+
+  get = (): SaveData => this.data;
+
+  subscribe = (fn: Listener): (() => void) => {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  };
+
+  update(mutator: (draft: SaveData) => void): void {
+    const draft: SaveData = JSON.parse(JSON.stringify(this.data));
+    mutator(draft);
+    this.data = draft;
+    this.persist();
+    this.listeners.forEach((l) => l());
+  }
+
+  updateSettings(patch: Partial<Settings>): void {
+    this.update((d) => {
+      d.settings = { ...d.settings, ...patch };
+    });
+  }
+
+  reset(): void {
+    const settings = this.data.settings;
+    this.data = defaultSave();
+    this.data.settings = settings;
+    this.persist();
+    this.listeners.forEach((l) => l());
+  }
+}
