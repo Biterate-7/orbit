@@ -4,5 +4,17 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   server: { port: 5173, host: true },
-  build: { target: 'es2020', chunkSizeWarningLimit: 900 },
+  build: {
+    target: 'es2020',
+    chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        // The bundled astronomical catalogue is data, not code: keep it in its own cacheable file.
+        manualChunks(id) {
+          if (id.includes('/astronomy/data/')) return 'catalogue';
+          return undefined;
+        },
+      },
+    },
+  },
 });

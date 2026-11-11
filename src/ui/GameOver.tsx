@@ -55,6 +55,7 @@ export function GameOver({ summary, onRetry, onMenu, sfx }: Props) {
     { k: 'ASTEROIDS DESTROYED', v: String(summary.destroyed) },
     { k: 'NEAR MISSES', v: String(summary.nearMisses) },
     { k: 'ENERGY COLLECTED', v: String(summary.energy) },
+    { k: 'OBJECTS CATALOGUED', v: summary.discoveries.length > 0 ? `+${summary.discoveries.length}` : '0', badge: summary.discoveries.length > 0 ? 'NEW' : undefined },
     { k: 'CREDITS EARNED', v: `+${summary.creditsEarned} CR`, amber: true },
   ];
 
@@ -83,6 +84,19 @@ export function GameOver({ summary, onRetry, onMenu, sfx }: Props) {
           ))}
         </div>
 
+        {summary.discoveries.length > 0 && (
+          <div className="unlock-note">
+            <span className="label">ADDED TO THE CATALOGUE</span>
+            {summary.discoveries.slice(0, 8).join(' · ')}
+            {summary.discoveries.length > 8 ? ` · +${summary.discoveries.length - 8} more` : ''}
+          </div>
+        )}
+        {summary.milestones.length > 0 && (
+          <div className="unlock-note">
+            <span className="label">MILESTONE REACHED</span>
+            {summary.milestones.join(' · ')}
+          </div>
+        )}
         {summary.unlocked.length > 0 && (
           <div className="unlock-note">
             <span className="label">NEW MODULE UNLOCKED</span>

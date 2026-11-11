@@ -121,7 +121,7 @@ export function evaluateStability(info: OrbitInfo, p: StabilityParams): Stabilit
 /**
  * Predict the ship's ballistic trajectory (no thrust) for `seconds`.
  * Writes (x,y) pairs into `out` and returns the number of points.
- * Moons are advanced on their rails during the prediction.
+ * `attractors` is a scratch copy: `place` moves its entries along their rails as time advances.
  */
 export function predictTrajectory(
   x: number,
@@ -129,7 +129,7 @@ export function predictTrajectory(
   vx: number,
   vy: number,
   attractors: Attractor[],
-  moonAt: ((t: number, out: { x: number; y: number }) => void) | null,
+  place: ((t: number, attractors: Attractor[]) => void) | null,
   t0: number,
   seconds: number,
   dt: number,
@@ -138,16 +138,11 @@ export function predictTrajectory(
 ): { count: number; crashed: boolean } {
   const steps = Math.min(Math.floor(seconds / dt), out.length >> 1);
   const g = { x: 0, y: 0 };
-  const moonPos = { x: 0, y: 0 };
-  const savedMoon = attractors.length > 1 ? { x: attractors[1].x, y: attractors[1].y } : null;
   let crashed = false;
   let n = 0;
   for (let i = 0; i < steps; i++) {
-    if (moonAt && attractors.length > 1) {
-      moonAt(t0 + i * dt, moonPos);
-      attractors[1].x = moonPos.x;
-      attractors[1].y = moonPos.y;
-    }
+    // Bodies on rails are advanced along their paths during the prediction.
+    if (place) place(t0 + i * dt, attractors);
     gravityAt(x, y, attractors, 1, g);
     vx += g.x * dt;
     vy += g.y * dt;
@@ -156,14 +151,12 @@ export function predictTrajectory(
     out[n * 2] = x;
     out[n * 2 + 1] = y;
     n++;
-    if (x * x + y * y < collideR * collideR) {
+    const dx = x - attractors[0].x;
+    const dy = y - attractors[0].y;
+    if (dx * dx + dy * dy < collideR * collideR) {
       crashed = true;
       break;
     }
-  }
-  if (savedMoon && attractors.length > 1) {
-    attractors[1].x = savedMoon.x;
-    attractors[1].y = savedMoon.y;
   }
   return { count: n, crashed };
 }

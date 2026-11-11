@@ -34,6 +34,26 @@ export function makeHazard(kind: HazardKind, size: 0 | 1 | 2, x: number, y: numb
       spin = 0;
       variants = 1;
       break;
+    case 'bomb':
+      // Molten ejecta or a blob of accreting plasma.
+      r = 3.6;
+      damage = 20;
+      spin = 0;
+      variants = 1;
+      break;
+    case 'ice':
+      r = [2.8, 3.8, 5][size];
+      damage = [12, 18, 24][size];
+      spin = rng.range(1, 3) * rng.sign();
+      variants = 3;
+      break;
+    case 'star':
+      // A star on a plunging orbit near a galactic nucleus.
+      r = 4.2;
+      damage = 34;
+      spin = 0;
+      variants = 3;
+      break;
   }
   return {
     id: nextId++,
@@ -58,6 +78,10 @@ export function makeHazard(kind: HazardKind, size: 0 | 1 | 2, x: number, y: numb
     age: 0,
     warnTime: 0,
     waveId: 0,
+    inc: 0,
+    node: 0,
+    offPlane: false,
+    ping: 0,
   };
 }
 

@@ -1683,3 +1683,623 @@ input[type='range']:focus-visible::-webkit-slider-thumb {
     animation: none;
   }
 }
+
+/* ------------------------------------------------------------------ astronomy: intro identity */
+
+.intro.long .name {
+  font-size: 34px;
+  letter-spacing: 4px;
+}
+
+.intro .rare-tag {
+  color: var(--amber);
+}
+
+.intro.rare .name {
+  text-shadow: 3px 3px 0 #6a4a10;
+}
+
+.intro.rare .line {
+  background: var(--amber);
+}
+
+.intro .ident {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--pixel);
+  font-size: 8px;
+  letter-spacing: 2px;
+  opacity: 0;
+  animation: fadeIn 0.3s steps(3) 1s forwards;
+}
+
+.intro .ident .obj {
+  color: var(--text);
+}
+
+.intro .ident .orb {
+  color: var(--dim);
+}
+
+.badge.real,
+.badge.variant,
+.badge.fiction {
+  font-family: var(--pixel);
+  font-size: 7px;
+  letter-spacing: 2px;
+  padding: 3px 6px 2px;
+  border: 1px solid currentColor;
+  display: inline-block;
+}
+
+.badge.real {
+  color: var(--green);
+}
+
+.badge.variant {
+  color: var(--cyan);
+}
+
+.badge.fiction {
+  color: var(--violet);
+}
+
+@media (max-width: 720px) {
+  .intro.long .name {
+    font-size: 20px;
+    letter-spacing: 2px;
+  }
+}
+
+/* ------------------------------------------------------------------ astronomy: discovery toast */
+
+.discovery {
+  position: absolute;
+  left: var(--gutter);
+  bottom: calc(104px + var(--safe-b));
+  z-index: 11;
+  pointer-events: none;
+  padding: 8px 12px 9px;
+  background: var(--panel);
+  border: 1px solid var(--line-bright);
+  border-left: 3px solid var(--green);
+  max-width: min(320px, 70vw);
+  animation: discoveryOut 5s steps(40) forwards;
+}
+
+.discovery .d-head {
+  font-family: var(--pixel);
+  font-size: 7px;
+  letter-spacing: 2px;
+  color: var(--green);
+  margin-bottom: 5px;
+}
+
+.discovery .d-name {
+  font-family: var(--pixel);
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--text);
+}
+
+.discovery .d-class {
+  font-size: 16px;
+  line-height: 1.1;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+.discovery .d-src {
+  font-size: 14px;
+  line-height: 1.1;
+  color: var(--dim);
+}
+
+@keyframes discoveryOut {
+  0% {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  6% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ------------------------------------------------------------------ astronomy: pause scan */
+
+.scan {
+  margin: 0 0 14px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  background: rgba(10, 13, 31, 0.6);
+  font-size: 17px;
+  line-height: 1.15;
+  color: var(--muted);
+  max-width: 420px;
+}
+
+.scan .label {
+  display: inline-block;
+  min-width: 46px;
+  margin: 0;
+  color: var(--cyan);
+}
+
+.scan p {
+  margin: 7px 0 6px;
+  color: var(--text);
+}
+
+.scan-code {
+  font-family: var(--pixel);
+  font-size: 7px;
+  letter-spacing: 2px;
+  color: var(--dim);
+}
+
+/* ------------------------------------------------------------------ astronomy: celestial catalogue */
+
+.credits-chip.log {
+  color: var(--green);
+  border-color: #1f5a3c;
+}
+
+.catalogue {
+  width: min(980px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.cat-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.cat-count {
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.cat-count .value {
+  font-family: var(--pixel);
+  font-size: 16px;
+  color: var(--green);
+}
+
+.cat-count .value span {
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.cat-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 12px 0 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.cat-tab {
+  background: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  padding: 6px 12px 5px;
+  font-family: var(--pixel);
+  font-size: 8px;
+  letter-spacing: 2px;
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.cat-tab:hover,
+.cat-tab:focus-visible {
+  color: var(--text);
+  outline: none;
+}
+
+.cat-tab.on {
+  color: var(--cyan);
+  border-color: var(--line);
+  background: rgba(10, 13, 31, 0.8);
+}
+
+.cat-body {
+  display: grid;
+  grid-template-columns: minmax(230px, 0.85fr) 1.3fr;
+  gap: 14px;
+  min-height: 0;
+  flex: 1;
+}
+
+.cat-left {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.cat-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.chip {
+  background: none;
+  border: 1px solid var(--line);
+  padding: 3px 6px 2px;
+  font-family: var(--pixel);
+  font-size: 6px;
+  letter-spacing: 1px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.chip.empty {
+  color: var(--dim);
+}
+
+.chip:hover,
+.chip:focus-visible {
+  border-color: var(--line-bright);
+  color: var(--text);
+  outline: none;
+}
+
+.chip.on {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.cat-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  padding: 2px 8px;
+  margin-bottom: 8px;
+  color: var(--cyan);
+}
+
+.cat-search input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  font: inherit;
+  color: var(--text);
+  text-transform: uppercase;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.cat-search input::placeholder {
+  color: var(--dim);
+}
+
+.cat-list {
+  overflow-y: auto;
+  min-height: 120px;
+  max-height: 46vh;
+  border: 1px solid var(--line);
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-bright) transparent;
+}
+
+.cat-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-bottom: 1px solid rgba(26, 33, 70, 0.6);
+  padding: 4px 8px 3px;
+  text-align: left;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.cat-row .n {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cat-row .c {
+  color: var(--dim);
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 2;
+}
+
+.cat-row:hover,
+.cat-row:focus-visible {
+  background: rgba(62, 242, 255, 0.07);
+  outline: none;
+}
+
+.cat-row.on {
+  background: rgba(62, 242, 255, 0.13);
+  box-shadow: inset 2px 0 0 var(--cyan);
+}
+
+.cat-empty,
+.cat-dark {
+  padding: 10px 8px;
+  font-family: var(--pixel);
+  font-size: 7px;
+  letter-spacing: 1px;
+  line-height: 1.7;
+  color: var(--dim);
+}
+
+.cat-dark {
+  border-top: 1px dashed var(--line);
+}
+
+.cat-detail {
+  overflow-y: auto;
+  max-height: 62vh;
+  border: 1px solid var(--line);
+  padding: 12px;
+  background: rgba(10, 13, 31, 0.5);
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-bright) transparent;
+}
+
+.card-top {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.portrait {
+  width: 144px;
+  height: 144px;
+  flex-shrink: 0;
+  image-rendering: pixelated;
+  border: 1px solid var(--line-bright);
+  background: var(--bg);
+}
+
+.card-name {
+  font-family: var(--pixel);
+  font-size: 15px;
+  letter-spacing: 1px;
+  line-height: 1.25;
+  margin-top: 8px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.card-des {
+  color: var(--muted);
+  font-size: 17px;
+}
+
+.card-class {
+  margin-top: 6px;
+  font-family: var(--pixel);
+  font-size: 7px;
+  letter-spacing: 2px;
+  color: var(--cyan);
+  line-height: 1.6;
+}
+
+.card-desc {
+  margin: 12px 0 10px;
+  font-size: 19px;
+  line-height: 1.15;
+  color: var(--text);
+}
+
+.card-note {
+  font-family: var(--pixel);
+  font-size: 7px;
+  letter-spacing: 1px;
+  color: var(--dim);
+  margin-bottom: 10px;
+}
+
+.facts {
+  margin-bottom: 10px;
+}
+
+.fact {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 17px;
+  line-height: 1.2;
+}
+
+.fact .k {
+  font-family: var(--pixel);
+  font-size: 7px;
+  letter-spacing: 1px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.fact .dots {
+  flex: 1;
+  border-bottom: 1px dotted var(--line-bright);
+  transform: translateY(-3px);
+}
+
+.fact .v {
+  color: var(--text);
+  text-align: right;
+}
+
+.card-meta {
+  border-top: 1px dashed var(--line);
+  padding-top: 8px;
+  font-size: 16px;
+  line-height: 1.15;
+  color: var(--muted);
+}
+
+.card-meta > div {
+  margin-bottom: 5px;
+}
+
+.card-meta .label {
+  display: inline;
+  margin: 0 4px 0 0;
+  color: var(--cyan);
+}
+
+.cat-envs,
+.cat-miles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+  overflow-y: auto;
+  max-height: 62vh;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-bright) transparent;
+}
+
+.env,
+.mile {
+  border: 1px solid var(--line);
+  padding: 8px 9px;
+  background: rgba(10, 13, 31, 0.5);
+}
+
+.env-top,
+.mile-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.env-name,
+.mile-title {
+  font-family: var(--pixel);
+  font-size: 8px;
+  letter-spacing: 1px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.env-rarity,
+.mile-reward {
+  font-family: var(--pixel);
+  font-size: 6px;
+  letter-spacing: 1px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.env-rarity.uncommon {
+  color: var(--cyan);
+}
+
+.env-rarity.rare {
+  color: var(--amber);
+}
+
+.env-rarity.legendary {
+  color: var(--violet);
+}
+
+.env-fam,
+.env-hint,
+.mile-desc,
+.mile-num {
+  font-size: 15px;
+  line-height: 1.15;
+  color: var(--muted);
+}
+
+.env-hint {
+  color: var(--dim);
+  margin-top: 3px;
+}
+
+.env.visited {
+  border-color: #1f5a3c;
+}
+
+.env.visited .env-hint {
+  color: var(--green);
+}
+
+.env.locked .env-name,
+.env.locked .env-fam {
+  color: var(--dim);
+}
+
+.mile.done {
+  border-color: #1f5a3c;
+}
+
+.mile-reward {
+  color: var(--amber);
+}
+
+.mile.done .mile-reward {
+  color: var(--green);
+}
+
+.mile-bar {
+  height: 4px;
+  background: var(--line);
+  margin: 6px 0 3px;
+}
+
+.mile-bar i {
+  display: block;
+  height: 100%;
+  background: var(--cyan);
+}
+
+.mile.done .mile-bar i {
+  background: var(--green);
+}
+
+@media (max-width: 760px) {
+  .cat-body {
+    grid-template-columns: 1fr;
+  }
+
+  .cat-list {
+    max-height: 22vh;
+  }
+
+  .cat-detail {
+    max-height: 34vh;
+  }
+
+  .portrait {
+    width: 96px;
+    height: 96px;
+  }
+
+  .cat-envs,
+  .cat-miles {
+    max-height: 52vh;
+  }
+}

@@ -3,8 +3,10 @@ import { timeToEnterRect } from '../collision';
 import { bayer, clamp, damp, hexToRgb, TAU } from '../math';
 import { gravityAt } from '../physics';
 import type { Run } from '../run';
-import type { LevelDef } from '../types';
-import { FogLayer, NebulaLayer, Starfield } from './background';
+import { getCatalogue } from '../../astronomy/database/catalogue';
+import { wrapAngle } from '../math';
+import type { HazardKind, LevelDef } from '../types';
+import { Backdrop, FogLayer, NebulaLayer, Starfield } from './background';
 import { BodyRenderer, MoonRenderer } from './celestial';
 import { drawText } from './font';
 import { ctx2d, dottedRing, makeCanvas, makeGlow, pixelCircle } from './pixel';
@@ -15,6 +17,8 @@ import {
   buildShipSprites,
   DEBRIS_FRAMES,
   frameIndex,
+  ICE_RADII,
+  ICE_RAMP,
   ROCK_FRAMES,
   SHIP_FRAMES,
 } from './sprites';
@@ -25,7 +29,17 @@ export interface RenderOptions {
   reducedEffects: boolean;
 }
 
-const WARN_COLORS = { asteroid: '#ffc94d', debris: '#c9d3ea', comet: '#7ffcff' } as const;
+const WARN_COLORS: Record<HazardKind, string> = { asteroid: '#ffc94d', debris: '#c9d3ea', comet: '#7ffcff', bomb: '#ff8a3d', ice: '#bff9ff', star: '#ffd890' };
+const STAR_HAZARD_TINTS = ['#ffd890', '#b8c4ff', '#ffffff'];
+/** Direction of the host star in planetary levels (matches the body shading). */
+const SUN_DIR = { x: -0.74, y: -0.673 };
+
+type ToScreen = (w: number) => number;
+
+interface CompanionSprite {
+  moon: MoonRenderer | null;
+  star: BodyRenderer | null;
+}
 
 /**
  * Pixel-art renderer. The world is drawn into a low-resolution canvas which the browser upscales
@@ -47,10 +61,16 @@ export class Renderer {
   private debris: HTMLCanvasElement[][];
   private motes: { small: HTMLCanvasElement[]; big: HTMLCanvasElement[] };
   private body: BodyRenderer | null = null;
-  private moon: MoonRenderer | null = null;
+  private companions: CompanionSprite[] = [];
   private bodyKey = '';
+  private rockKey = '';
+  private ice: HTMLCanvasElement[][][] = [];
+  private iceZoom = -1;
+  /** Pre-rendered static zones around the primary (atmosphere haze, scorched sector). */
+  private zones: { canvas: HTMLCanvasElement; half: number } | null = null;
   private glows = new Map<string, HTMLCanvasElement>();
   private stars = new Starfield(9001);
+  private backdrop = new Backdrop();
   private nebula = new NebulaLayer();
   private fog = new FogLayer();
   private vignette: HTMLCanvasElement | null = null;
@@ -81,8 +101,9 @@ export class Renderer {
     this.ctx = ctx2d(this.canvas);
     this.zoom = Math.min(this.vw, this.vh) / 2 / CONFIG.VIEW_RADIUS;
     if (Math.abs(this.zoom - this.rockZoom) > 0.02) {
-      this.rocks = buildRockSprites(this.zoom);
+      // Rock sprites depend on the zoom and on the level's palette; ensureLevel rebuilds them.
       this.rockZoom = this.zoom;
+      this.rockKey = '';
     }
     this.stars.resize(this.vw, this.vh);
     this.vignette = this.buildVignette('#000000', 0.55, 0.62);
@@ -127,18 +148,89 @@ export class Renderer {
     return g;
   }
 
+  /** Build everything that is fixed for the duration of a level: bodies, sky, palettes, static zones. */
   private ensureLevel(level: LevelDef): void {
-    const R = level.body.radius * this.zoom;
-    const outer =
-      level.body.kind === 'blackhole' ? level.body.heatRadius * this.zoom : level.body.kind === 'gasgiant' ? level.body.radius * 1.8 * this.zoom : R;
+    const z = this.zoom;
+    const R = level.body.radius * z;
     const key = `${level.index}:${level.seed}:${level.body.kind}:${Math.round(R)}:${this.vw}x${this.vh}`;
     if (key === this.bodyKey) return;
     this.bodyKey = key;
-    this.body = new BodyRenderer(level.body.kind, R, level.seed, outer);
-    this.moon = level.moon ? new MoonRenderer(level.moon.radius * this.zoom, level.seed + 7) : null;
+    this.body = new BodyRenderer(level.body.kind, level.body.look, R, level.seed, z, level.body.heatRadius * z);
+    this.companions = level.companions.map((c, i) =>
+      c.look
+        ? { moon: null, star: new BodyRenderer(c.kind === 'star' ? 'star' : 'planet', c.look, c.radius * z, level.seed + 11 * (i + 1), z) }
+        : { moon: new MoonRenderer(c.radius * z, level.seed + 7 * (i + 1)), star: null },
+    );
     const t = level.theme;
+    const bg = level.background;
     const strength = this.opts.reducedEffects ? t.nebulaStrength * 0.6 : t.nebulaStrength;
-    this.nebula.build(this.vw, this.vh, level.seed, t.nebulaA, t.nebulaB, strength);
+    const sprite = bg.spriteId ? getCatalogue().sprite(bg.spriteId) : null;
+    this.nebula.build(this.vw, this.vh, level.seed, t.nebulaA, t.nebulaB, strength, sprite);
+    this.stars = new Starfield(bg.starSeed, this.opts.reducedEffects ? Math.min(1, bg.starDensity) : bg.starDensity, bg.starColors);
+    this.stars.resize(this.vw, this.vh);
+    this.backdrop.build(this.vw, this.vh, bg);
+    const rockKey = `${z.toFixed(2)}:${bg.rockRamp.join('')}`;
+    if (rockKey !== this.rockKey) {
+      this.rocks = buildRockSprites(z, bg.rockRamp);
+      this.rockKey = rockKey;
+    }
+    if (Math.abs(z - this.iceZoom) > 0.02) {
+      this.ice = buildRockSprites(z, ICE_RAMP, ICE_RADII, 9191);
+      this.iceZoom = z;
+    }
+    this.zones = this.buildZones(level);
+  }
+
+  /** Dithered haze for dragging atmospheres and the scorched wedge of a tidally locked world. */
+  private buildZones(level: LevelDef): { canvas: HTMLCanvasElement; half: number } | null {
+    const M = level.mechanics;
+    const z = this.zoom;
+    const hazes = M.dragZones.filter((d) => d.style === 'haze');
+    const sc = M.scorch;
+    if (hazes.length === 0 && !sc) return null;
+    const half = Math.ceil(Math.max(sc?.reach ?? 0, ...hazes.map((h) => h.rMax)) * z) + 1;
+    const size = half * 2 + 1;
+    const c = makeCanvas(size, size);
+    const g = ctx2d(c);
+    const img = g.createImageData(size, size);
+    const hazeRgb = hazes.map((h) => hexToRgb(h.color));
+    const hot = hexToRgb('#ff8a3d');
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const dx = x - half;
+        const dy = y - half;
+        const r = Math.hypot(dx, dy) / z;
+        let col: [number, number, number] | null = null;
+        let alpha = 0;
+        for (let i = 0; i < hazes.length; i++) {
+          const h = hazes[i];
+          if (r < h.rMin || r > h.rMax) continue;
+          const k = 1 - (r - h.rMin) / (h.rMax - h.rMin);
+          if (0.1 + 0.34 * k > bayer(x, y)) {
+            col = hazeRgb[i];
+            alpha = 110;
+          }
+        }
+        if (sc && r > level.body.radius && r < sc.reach) {
+          const off = Math.abs(wrapAngle(Math.atan2(dy, dx) - sc.angle)) / sc.halfWidth;
+          if (off < 1) {
+            const k = (0.2 + 0.4 * (1 - r / sc.reach)) * (off > 0.85 ? (1 - off) / 0.15 : 1);
+            if (k > bayer(x, y)) {
+              col = hot;
+              alpha = 120;
+            }
+          }
+        }
+        if (!col) continue;
+        const i = (y * size + x) * 4;
+        img.data[i] = col[0];
+        img.data[i + 1] = col[1];
+        img.data[i + 2] = col[2];
+        img.data[i + 3] = alpha;
+      }
+    }
+    g.putImageData(img, 0, 0);
+    return { canvas: c, half };
   }
 
   // ---------------------------------------------------------------- frame
@@ -182,8 +274,11 @@ export class Renderer {
     const cy = this.camY;
     const toSx = (wx: number): number => Math.round((wx - cx) * z + ox);
     const toSy = (wy: number): number => Math.round((wy - cy) * z + oy);
+    // Barycentre (centre of the orbital band) and the primary body, which differ in binary systems.
     const bsx = toSx(0);
     const bsy = toSy(0);
+    const pbx = toSx(run.bx);
+    const pby = toSy(run.by);
     const bodyScale = run.bodyScale;
     const warp = run.warpAmount;
 
@@ -193,17 +288,25 @@ export class Renderer {
     ctx.fillStyle = L.theme.bg;
     ctx.fillRect(0, 0, this.vw, this.vh);
     this.nebula.draw(ctx, cx * z, cy * z, this.time, 1 - warp * 0.6);
-    const lens = L.body.kind === 'blackhole' && bodyScale > 0.5 ? { x: bsx, y: bsy, r: L.body.radius * z * 1.7 * bodyScale } : null;
+    this.backdrop.draw(ctx, cx * z, cy * z, 1 - warp);
+    const lens = L.body.kind === 'blackhole' && bodyScale > 0.5 ? { x: pbx, y: pby, r: L.body.radius * z * 1.7 * bodyScale } : null;
     this.stars.draw(ctx, this.vw, this.vh, cx * z, cy * z, this.time, warp, lens, 1);
 
     // ---- gravity field ripples + safe band
     if (bodyScale > 0.05) this.drawGravityField(run, bsx, bsy, bodyScale, menu);
 
-    // ---- celestial body
-    this.drawBody(run, bsx, bsy, bodyScale);
+    // ---- static zones (atmosphere haze, scorched sector) under the body
+    if (this.zones && !menu && bodyScale > 0.9) {
+      ctx.globalAlpha = 0.5 + 0.12 * Math.sin(this.time * 2.2);
+      ctx.drawImage(this.zones.canvas, pbx - this.zones.half, pby - this.zones.half);
+      ctx.globalAlpha = 1;
+    }
+
+    // ---- celestial bodies
+    this.drawBody(run, pbx, pby, bodyScale, toSx, toSy);
 
     // ---- environment telegraphs (under hazards)
-    if (!menu) this.drawEnvironment(run, bsx, bsy);
+    if (!menu) this.drawEnvironment(run, pbx, pby, bsx, bsy);
 
     // ---- energy motes
     for (const m of run.motes) {
@@ -240,12 +343,14 @@ export class Renderer {
     }
     ctx.globalAlpha = 1;
 
-    // ---- fog of the nebula
-    if (L.modifiers.includes('fog')) {
-      const holes = [{ x: bsx, y: bsy, r: L.body.radius * z * 2.4 * Math.max(0.01, bodyScale) }];
+    // ---- fog of the nebula / the total darkness of a starless world
+    const dark = L.mechanics.dark;
+    if (L.modifiers.includes('fog') || dark) {
+      const holes = [{ x: pbx, y: pby, r: L.body.radius * z * (dark ? 1.5 : 2.4) * Math.max(0.01, bodyScale) }];
       if (s.visible) holes.push({ x: toSx(s.x), y: toSy(s.y), r: run.fogRadius * z });
-      const dens = menu ? 0 : (run.phase === 'warping' ? 1 - warp : 1) * 0.82;
-      this.fog.draw(ctx, this.vw, this.vh, holes, '#0d0820', dens, this.time);
+      const dens = menu ? 0 : (run.phase === 'warping' ? 1 - warp : 1) * (dark ? 0.95 : 0.82);
+      this.fog.draw(ctx, this.vw, this.vh, holes, L.background.fogColor, dens, this.time);
+      if (dark && !menu) this.drawRadar(run, toSx, toSy);
     }
 
     // ---- floating texts
@@ -284,7 +389,14 @@ export class Renderer {
     }
     if (run.storm.state === 'active' && !menu) {
       ctx.globalAlpha = 0.06;
-      ctx.fillStyle = '#b77dff';
+      ctx.fillStyle = L.theme.accent;
+      ctx.fillRect(0, 0, this.vw, this.vh);
+      ctx.globalAlpha = 1;
+    }
+    if (run.empT > 0 && !menu) {
+      // Thrusters offline: a flickering cold wash.
+      ctx.globalAlpha = Math.floor(this.time * 18) % 2 ? 0.1 : 0.04;
+      ctx.fillStyle = PALETTE.cyan;
       ctx.fillRect(0, 0, this.vw, this.vh);
       ctx.globalAlpha = 1;
     }
@@ -333,35 +445,37 @@ export class Renderer {
     ctx.globalAlpha = 1;
   }
 
-  private drawBody(run: Run, bsx: number, bsy: number, bodyScale: number): void {
+  private drawBody(run: Run, bsx: number, bsy: number, appear: number, toSx: ToScreen, toSy: ToScreen): void {
     const ctx = this.ctx;
     const L = run.level;
     const z = this.zoom;
     const B = L.body;
-    if (!this.body || bodyScale <= 0.01) return;
+    if (!this.body || appear <= 0.01) return;
+    // Pulsating stars physically swell and shrink.
+    const bodyScale = appear * run.bodyPulse;
     const R = B.radius * z * bodyScale;
+    const look = B.look;
+    const heatPx = run.heatRadiusNow * z * appear;
 
-    // Glows.
+    // Glows, coloured by the body's own palette.
     ctx.globalCompositeOperation = 'lighter';
     const pulse = 0.85 + 0.15 * Math.sin(this.time * (B.kind === 'neutron' ? 9 : 1.3));
     const glows: [number, string, number][] = [];
     switch (B.kind) {
-      case 'planet':
-        glows.push([R * 2.1, '#3d6bff', 0.55]);
-        break;
-      case 'redgiant':
-        glows.push([B.heatRadius * z * bodyScale * 1.35, '#ff4d5e', 0.8]);
-        glows.push([R * 1.45, '#ff8a3d', 1.0]);
+      case 'star':
+        if (heatPx > 0) glows.push([heatPx * 1.35, look.ramp[Math.min(3, look.ramp.length - 1)], 0.8]);
+        glows.push([R * Math.max(1.45, look.glowScale), look.glow, look.glowIntensity]);
         break;
       case 'neutron':
-        glows.push([R * 9 * pulse, '#3ef2ff', 0.9]);
+        glows.push([R * look.glowScale * pulse, look.glow, look.glowIntensity]);
         glows.push([R * 3.2, '#e8f0ff', 1.2]);
         break;
       case 'blackhole':
-        glows.push([B.heatRadius * z * bodyScale * 1.45, '#9b5cff', 0.6]);
+        glows.push([B.heatRadius * z * appear * 1.45, look.glow, look.glowIntensity]);
         break;
-      case 'gasgiant':
-        glows.push([R * 2.2, '#9b5cff', 0.45]);
+      default:
+        glows.push([R * look.glowScale, look.glow, look.glowIntensity]);
+        if (heatPx > 0) glows.push([heatPx * 1.2, '#ff4d5e', 0.45]);
         break;
     }
     if (run.phase === 'active' && run.level.modifiers.includes('waves')) {
@@ -376,16 +490,16 @@ export class Renderer {
     }
     ctx.globalCompositeOperation = 'source-over';
 
-    // Heat zone dithered haze and boundary.
-    if (B.heatRadius > 0 && B.kind !== 'blackhole') {
-      ctx.fillStyle = B.kind === 'neutron' ? '#3ef2ff' : '#ff8a3d';
+    // Heat zone boundary (it moves on pulsating stars and near periapsis).
+    if (heatPx > 0 && B.kind !== 'blackhole') {
+      ctx.fillStyle = B.kind === 'neutron' ? look.glow : '#ff8a3d';
       ctx.globalAlpha = 0.35;
-      dottedRing(ctx, bsx, bsy, B.heatRadius * z * bodyScale, 3, this.time * 0.3);
+      dottedRing(ctx, bsx, bsy, heatPx, 3, this.time * 0.3);
       ctx.globalAlpha = 1;
     } else if (B.kind === 'blackhole') {
       ctx.fillStyle = '#ff8a3d';
       ctx.globalAlpha = 0.25;
-      dottedRing(ctx, bsx, bsy, (B.heatRadius + 2) * z * bodyScale, 4, -this.time * 0.2);
+      dottedRing(ctx, bsx, bsy, (B.heatRadius + 2) * z * appear, 4, -this.time * 0.2);
       ctx.globalAlpha = 1;
     }
 
@@ -398,27 +512,137 @@ export class Renderer {
       ctx.drawImage(c, bsx - (w >> 1), bsy - (w >> 1), w, w);
     }
 
-    // Moon.
-    if (L.moon && this.moon && run.attractors.length > 1) {
-      const m = run.attractors[1];
-      const mx = Math.round((m.x - this.camX) * z + bsx);
-      const my = Math.round((m.y - this.camY) * z + bsy);
-      const d = Math.hypot(m.x, m.y) || 1;
-      this.moon.update(-m.x / d, -m.y / d);
-      ctx.globalAlpha = bodyScale;
-      ctx.globalCompositeOperation = 'lighter';
-      const g = this.glow(L.moon.radius * z * 2.4, '#3d6bff', 0.35);
-      ctx.drawImage(g, mx - (g.width >> 1), my - (g.height >> 1));
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.drawImage(this.moon.canvas, mx - this.moon.half, my - this.moon.half);
+    // Companions: moons, and the other stars of a multiple system.
+    const selfLit = B.kind === 'star' || B.kind === 'neutron' || B.kind === 'blackhole';
+    for (let i = 0; i < L.companions.length; i++) {
+      const spec = L.companions[i];
+      const sprite = this.companions[i];
+      const m = run.attractors[i + 1];
+      if (!sprite || !m) continue;
+      const mx = toSx(m.x);
+      const my = toSy(m.y);
+      const rPx = spec.radius * z;
+      if (mx < -rPx * 4 || my < -rPx * 4 || mx > this.vw + rPx * 4 || my > this.vh + rPx * 4) continue;
+      ctx.globalAlpha = Math.min(1, appear);
+      if (sprite.star && spec.look) {
+        ctx.globalCompositeOperation = 'lighter';
+        if (spec.heatRadius > 0) {
+          const hg = this.glow(spec.heatRadius * z * 1.3, spec.look.ramp[Math.min(3, spec.look.ramp.length - 1)], 0.7);
+          ctx.drawImage(hg, mx - (hg.width >> 1), my - (hg.height >> 1));
+        }
+        const g = this.glow(rPx * 1.5, spec.look.glow, 1);
+        ctx.drawImage(g, mx - (g.width >> 1), my - (g.height >> 1));
+        ctx.globalCompositeOperation = 'source-over';
+        if (spec.heatRadius > 0) {
+          ctx.fillStyle = '#ff8a3d';
+          ctx.globalAlpha = 0.35 * Math.min(1, appear);
+          dottedRing(ctx, mx, my, spec.heatRadius * z, 3, -this.time * 0.3);
+          ctx.globalAlpha = Math.min(1, appear);
+        }
+        sprite.star.update(run.simTime + i * 40, 0.04);
+        ctx.drawImage(sprite.star.canvas, mx - sprite.star.half, my - sprite.star.half);
+      } else if (sprite.moon) {
+        // Moons of a star-like primary are lit by it; moons of a planet by the distant host star.
+        let lx = SUN_DIR.x;
+        let ly = SUN_DIR.y;
+        if (selfLit) {
+          const dx = run.bx - m.x;
+          const dy = run.by - m.y;
+          const d = Math.hypot(dx, dy) || 1;
+          lx = dx / d;
+          ly = dy / d;
+        }
+        sprite.moon.update(lx, ly);
+        ctx.globalCompositeOperation = 'lighter';
+        const g = this.glow(rPx * 2.4, '#3d6bff', 0.35);
+        ctx.drawImage(g, mx - (g.width >> 1), my - (g.height >> 1));
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.drawImage(sprite.moon.canvas, mx - sprite.moon.half, my - sprite.moon.half);
+      }
+      // Real, catalogued companions carry their name.
+      if (spec.name && appear > 0.9) {
+        ctx.globalAlpha = 0.7;
+        drawText(ctx, spec.name, mx, my + Math.round(rPx) + 3, PALETTE.gray, 'center');
+      }
       ctx.globalAlpha = 1;
     }
   }
 
-  private drawEnvironment(run: Run, bsx: number, bsy: number): void {
+  /** Radar in the dark: the expanding ping ring and the contacts it has just swept over. */
+  private drawRadar(run: Run, toSx: ToScreen, toSy: ToScreen): void {
+    const ctx = this.ctx;
+    const s = run.ship;
+    if (!s.visible) return;
+    if (run.pingR > 0) {
+      ctx.fillStyle = PALETTE.cyan;
+      ctx.globalAlpha = Math.max(0.08, 0.55 * (1 - run.pingR / 330));
+      dottedRing(ctx, toSx(s.x), toSy(s.y), run.pingR * this.zoom, 4, 0);
+    }
+    for (const h of run.hazards) {
+      if (h.ping <= 0 || h.offPlane) continue;
+      const hx = toSx(h.x);
+      const hy = toSy(h.y);
+      const r = Math.max(3, Math.round(h.r * this.zoom) + 2);
+      ctx.fillStyle = WARN_COLORS[h.kind];
+      ctx.globalAlpha = Math.min(1, h.ping);
+      // Corner brackets around the contact.
+      for (const sx of [-1, 1]) {
+        for (const sy of [-1, 1]) {
+          ctx.fillRect(hx + sx * r, hy + sy * r, 1, 1);
+          ctx.fillRect(hx + sx * (r - 1), hy + sy * r, 1, 1);
+          ctx.fillRect(hx + sx * r, hy + sy * (r - 1), 1, 1);
+        }
+      }
+      ctx.fillRect(hx, hy, 1, 1);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /** `bsx,bsy` = primary body on screen; `cx0,cy0` = barycentre (shock waves expand from there). */
+  private drawEnvironment(run: Run, bsx: number, bsy: number, cx0: number, cy0: number): void {
     const ctx = this.ctx;
     const z = this.zoom;
     const L = run.level;
+    const M = L.mechanics;
+
+    // Cryo-plume: the two edges of the jet.
+    if (M.plume) {
+      ctx.fillStyle = '#bff9ff';
+      ctx.globalAlpha = 0.3;
+      const reach = M.plume.reach * z;
+      for (const side of [-1, 1]) {
+        const a = run.plumeAngle + side * M.plume.halfWidth;
+        const ca = Math.cos(a);
+        const sa = Math.sin(a);
+        for (let r = L.body.radius * z + 2; r < reach; r += 4) ctx.fillRect(Math.round(bsx + ca * r), Math.round(bsy + sa * r), 1, 1);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // Eruption telegraphs: a blinking vent and the line the ejecta will take.
+    for (const e of run.eruptions) {
+      if (e.t >= e.telegraph || !M.eruptions) continue;
+      const k = e.t / e.telegraph;
+      if (Math.floor(e.t * (6 + 10 * k)) % 2 !== 0) continue;
+      const ca = Math.cos(e.angle);
+      const sa = Math.sin(e.angle);
+      ctx.fillStyle = k > 0.7 ? PALETTE.red : PALETTE.orange;
+      ctx.globalAlpha = 0.45 + 0.5 * k;
+      for (let r = L.body.radius * z; r < M.eruptions.reach[1] * z; r += 4) ctx.fillRect(Math.round(bsx + ca * r), Math.round(bsy + sa * r), 1, 1);
+      const vx = Math.round(bsx + ca * (L.body.radius * z + 2));
+      const vy = Math.round(bsy + sa * (L.body.radius * z + 2));
+      ctx.fillRect(vx - 1, vy - 1, 3, 3);
+      ctx.globalAlpha = 1;
+    }
+
+    // Magnetic burst building up: a ring collapsing onto the star.
+    if (run.empCharge > 0 && M.emp) {
+      const k = run.empCharge / M.emp.telegraph;
+      ctx.fillStyle = Math.floor(this.time * 12) % 2 ? PALETTE.white : PALETTE.cyan;
+      ctx.globalAlpha = 0.85 - 0.5 * k;
+      dottedRing(ctx, bsx, bsy, (L.body.radius + 110 * k) * z, 3, this.time * 2);
+      ctx.globalAlpha = 1;
+    }
 
     // Solar flares.
     for (const f of run.flares) {
@@ -476,7 +700,7 @@ export class Renderer {
     const b = run.beam;
     if (b) {
       const state = run.beamState();
-      const jet = L.body.kind === 'blackhole';
+      const jet = M.beam?.jet ?? L.body.kind === 'blackhole';
       const core = jet ? '#e8d0ff' : '#ffffff';
       const edge = jet ? '#9b5cff' : '#3ef2ff';
       for (let k = 0; k < b.count; k++) {
@@ -526,10 +750,10 @@ export class Renderer {
       const k = w.r / w.maxR;
       ctx.fillStyle = '#e8f0ff';
       ctx.globalAlpha = 0.7 * (1 - k);
-      pixelCircle(ctx, bsx, bsy, w.r * z);
+      pixelCircle(ctx, cx0, cy0, w.r * z);
       ctx.fillStyle = L.theme.ripple;
       ctx.globalAlpha = 0.45 * (1 - k);
-      pixelCircle(ctx, bsx, bsy, w.r * z - 3, [2, 2]);
+      pixelCircle(ctx, cx0, cy0, w.r * z - 3, [2, 2]);
     }
     ctx.globalAlpha = 1;
   }
@@ -573,7 +797,7 @@ export class Renderer {
       let y = h.y;
       let vx = h.vx;
       let vy = h.vy;
-      ctx.fillStyle = h.kind === 'comet' ? '#7ffcff' : h.kind === 'debris' ? '#c9d3ea' : '#ffc94d';
+      ctx.fillStyle = WARN_COLORS[h.kind];
       for (let i = 0; i < steps; i++) {
         gravityAt(x, y, run.attractors, h.gravity, g);
         vx += g.x * dt;
@@ -597,16 +821,51 @@ export class Renderer {
       const sx = toSx(h.x);
       const sy = toSy(h.y);
       if (sx < -40 || sy < -40 || sx > this.vw + 40 || sy > this.vh + 40) continue;
-      if (h.kind === 'asteroid') {
-        const set = this.rocks[h.size]?.[h.variant % this.rocks[h.size].length];
+      // Bodies of an inclined belt that are above or below the ship's plane are drawn faint.
+      const base = h.offPlane ? 0.28 : 1;
+      ctx.globalAlpha = base;
+      if (h.kind === 'asteroid' || h.kind === 'ice') {
+        const sheet = h.kind === 'ice' ? this.ice : this.rocks;
+        const set = sheet[h.size]?.[h.variant % sheet[h.size].length];
         if (!set) continue;
         const spr = set[frameIndex(h.rot, ROCK_FRAMES)];
         if (slow) {
-          ctx.globalAlpha = 0.5;
+          ctx.globalAlpha = 0.5 * base;
           ctx.drawImage(spr, sx - (spr.width >> 1) + 1, sy - (spr.height >> 1));
-          ctx.globalAlpha = 1;
+          ctx.globalAlpha = base;
         }
         ctx.drawImage(spr, sx - (spr.width >> 1), sy - (spr.height >> 1));
+        ctx.globalAlpha = 1;
+      } else if (h.kind === 'bomb') {
+        // Molten ejecta / plasma: a hot core with a glow.
+        ctx.globalCompositeOperation = 'lighter';
+        const g = this.glow(6, '#ff8a3d', 1.1);
+        ctx.drawImage(g, sx - (g.width >> 1), sy - (g.height >> 1));
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillStyle = '#ff4d5e';
+        ctx.fillRect(sx - 2, sy - 1, 5, 3);
+        ctx.fillRect(sx - 1, sy - 2, 3, 5);
+        ctx.fillStyle = '#ffc94d';
+        ctx.fillRect(sx - 1, sy - 1, 3, 3);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(sx, sy, 1, 1);
+      } else if (h.kind === 'star') {
+        // A star on a plunging orbit: a point of light with diffraction spikes.
+        const tint = STAR_HAZARD_TINTS[h.variant % STAR_HAZARD_TINTS.length];
+        if (!h.offPlane) {
+          ctx.globalCompositeOperation = 'lighter';
+          const g = this.glow(8, tint, 1.2);
+          ctx.drawImage(g, sx - (g.width >> 1), sy - (g.height >> 1));
+          ctx.globalCompositeOperation = 'source-over';
+        }
+        ctx.fillStyle = tint;
+        ctx.fillRect(sx - 3, sy, 7, 1);
+        ctx.fillRect(sx, sy - 3, 1, 7);
+        ctx.fillRect(sx - 1, sy - 1, 3, 3);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(sx - 1, sy, 3, 1);
+        ctx.fillRect(sx, sy - 1, 1, 3);
+        ctx.globalAlpha = 1;
       } else if (h.kind === 'debris') {
         const spr = this.debris[h.variant % this.debris.length][frameIndex(h.rot, DEBRIS_FRAMES)];
         ctx.drawImage(spr, sx - (spr.width >> 1), sy - (spr.height >> 1));
@@ -641,7 +900,9 @@ export class Renderer {
         ctx.fillRect(sx, sy - 2, 1, 1);
         ctx.fillRect(sx, sy + 2, 1, 1);
       }
+      ctx.globalAlpha = 1;
     }
+    ctx.globalAlpha = 1;
   }
 
   private drawShip(run: Run, toSx: (x: number) => number, toSy: (y: number) => number, menu: boolean): void {
@@ -740,7 +1001,7 @@ export class Renderer {
     const base = CONFIG.WARN_WINDOW + run.mods.scanner * 1.0;
     const blink = Math.floor(this.time * 7) % 2 === 0;
     for (const h of run.hazards) {
-      if (h.orbiting) continue;
+      if (h.orbiting || h.offPlane) continue;
       const rx = h.x - this.camX;
       const ry = h.y - this.camY;
       if (Math.abs(rx) < hw && Math.abs(ry) < hh) continue;

@@ -1,3 +1,6 @@
+import { emptyLog, sanitizeLog } from '../progression/discovery';
+import type { DiscoveryLog } from '../progression/discovery';
+import { MILESTONES } from '../progression/milestones';
 import type { PermanentId, UpgradeId } from './types';
 import { BASE_UNLOCKED, UPGRADE_ORDER } from './upgrades';
 
@@ -31,6 +34,10 @@ export interface SaveData {
   permanent: Record<PermanentId, number>;
   unlocked: UpgradeId[];
   settings: Settings;
+  /** Discovery log: catalogued objects, environments met, lifetime sectors. */
+  journey: DiscoveryLog;
+  /** Ids of completed milestones. */
+  milestones: string[];
 }
 
 const KEY = 'orbitlost.save.v1';
@@ -64,6 +71,8 @@ export function defaultSave(): SaveData {
     permanent: { thrusters: 0, hull: 0, collector: 0, shields: 0, reactor: 0 },
     unlocked: [...BASE_UNLOCKED],
     settings: { ...DEFAULT_SETTINGS },
+    journey: emptyLog(),
+    milestones: [],
   };
 }
 
@@ -98,6 +107,10 @@ function sanitize(raw: unknown): SaveData {
     autoPause: bool(s.autoPause, DEFAULT_SETTINGS.autoPause),
     touchControls: s.touchControls === 'on' || s.touchControls === 'off' ? s.touchControls : 'auto',
   };
+  // Saves from before the discovery system simply start with an empty log.
+  d.journey = sanitizeLog(r.journey);
+  const known = new Set(MILESTONES.map((m) => m.id));
+  d.milestones = Array.isArray(r.milestones) ? [...new Set(r.milestones.filter((m): m is string => typeof m === 'string' && known.has(m)))] : [];
   return d;
 }
 
