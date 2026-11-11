@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import type { SfxName } from '../game/types';
+import type { LevelDef, SfxName } from '../game/types';
 import { useArrowNav, useKeys } from './hooks';
 
 interface Props {
   level: number;
   levelName: string;
+  /** The sector being played: shown as a short scan read-out. */
+  scan?: LevelDef;
   muted: boolean;
   onResume: () => void;
   onRestart: () => void;
@@ -47,6 +49,22 @@ export function PauseMenu(p: Props) {
         <p className="panel-sub">
           SECTOR {String(p.level).padStart(2, '0')} · {p.levelName}
         </p>
+        {p.scan && !confirm && (
+          <div className="scan">
+            <div>
+              <span className="label">SCAN</span> {p.scan.identity.objectName} · {p.scan.identity.objectClass.toUpperCase()}
+            </div>
+            <div>
+              <span className="label">TYPE</span> {p.scan.identity.kind}
+              {p.scan.identity.source ? ` · ${p.scan.identity.source}` : ''}
+            </div>
+            <div>
+              <span className="label">ORBIT</span> {p.scan.identity.orbitLabel}
+            </div>
+            <p>{p.scan.identity.description}</p>
+            <div className="scan-code">SECTOR CODE {p.scan.code}</div>
+          </div>
+        )}
         {confirm ? (
           <div className="menu-list">
             <p className="panel-sub" style={{ marginBottom: 8 }}>

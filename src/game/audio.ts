@@ -6,10 +6,11 @@ type Wave = OscillatorType;
 const DRONE_ROOT: Record<BodyKind | 'menu', number> = {
   menu: 55,
   planet: 55,
-  redgiant: 46.25,
+  star: 46.25,
   neutron: 73.42,
   blackhole: 41.2,
   gasgiant: 61.74,
+  smallbody: 65.41,
 };
 
 /**

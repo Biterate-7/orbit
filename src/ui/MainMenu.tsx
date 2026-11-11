@@ -8,12 +8,15 @@ interface Props {
   save: SaveData;
   onPlay: () => void;
   onUpgrades: () => void;
+  onCatalogue: () => void;
+  /** Number of objects in the bundled astronomical catalogue. */
+  catalogueSize: number;
   onHowTo: () => void;
   onSettings: () => void;
   sfx: (n: SfxName) => void;
 }
 
-export function MainMenu({ save, onPlay, onUpgrades, onHowTo, onSettings, sfx }: Props) {
+export function MainMenu({ save, onPlay, onUpgrades, onCatalogue, catalogueSize, onHowTo, onSettings, sfx }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   useArrowNav(ref, true);
   const r = save.records;
@@ -37,6 +40,12 @@ export function MainMenu({ save, onPlay, onUpgrades, onHowTo, onSettings, sfx }:
         <button className="btn nav" onClick={click(onUpgrades)} onMouseEnter={hover}>
           SHIP UPGRADES
           {save.credits > 0 && <span className="credits-chip">{save.credits} CR</span>}
+        </button>
+        <button className="btn nav" onClick={click(onCatalogue)} onMouseEnter={hover}>
+          CATALOGUE
+          <span className="credits-chip log">
+            {Object.keys(save.journey.objects).length}/{catalogueSize}
+          </span>
         </button>
         <button className="btn nav" onClick={click(onHowTo)} onMouseEnter={hover}>
           HOW TO PLAY

@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Engine } from './game/engine';
 import type { EnginePhase } from './game/engine';
+import { generateLevelFromSeed } from './generation/levelGenerator';
 import { SaveStore } from './game/persistence';
 import type { Settings } from './game/persistence';
-import type { LevelIntro, RunSummary, SfxName, UpgradeId, UpgradeOffer } from './game/types';
+import type { LevelIdentity, LevelIntro, RunSummary, SfxName, UpgradeId, UpgradeOffer } from './game/types';
+import { getCatalogue } from './astronomy/database/catalogue';
+import { Catalogue } from './ui/Catalogue';
+import { DiscoveryToast } from './ui/DiscoveryToast';
 import { GameOver } from './ui/GameOver';
 import { HowToPlay } from './ui/HowToPlay';
 import { Hud } from './ui/Hud';
@@ -16,7 +20,7 @@ import { ShipUpgrades } from './ui/ShipUpgrades';
 import { TouchControls } from './ui/TouchControls';
 import { UpgradePicker } from './ui/UpgradePicker';
 
-type MenuScreen = 'main' | 'upgrades' | 'howto' | 'settings';
+type MenuScreen = 'main' | 'upgrades' | 'catalogue' | 'howto' | 'settings';
 type PauseView = 'main' | 'settings' | 'howto';
 
 export function App() {
@@ -30,6 +34,7 @@ export function App() {
   const [offer, setOffer] = useState<UpgradeOffer[] | null>(null);
   const [summary, setSummary] = useState<RunSummary | null>(null);
   const [intro, setIntro] = useState<LevelIntro | null>(null);
+  const [discovery, setDiscovery] = useState<{ identity: LevelIdentity; key: number } | null>(null);
   const [runId, setRunId] = useState(0);
   const touch = useTouchMode(save.settings.touchControls);
 
@@ -40,7 +45,21 @@ export function App() {
     const eng = new Engine(el, store);
     setEngine(eng);
     // Debug handle for development only (stripped from production builds).
-    if (import.meta.env.DEV) (window as unknown as { __engine?: Engine }).__engine = eng;
+    if (import.meta.env.DEV) {
+      const w = window as unknown as { __engine?: Engine; __findLevel?: (env: string, index?: number) => unknown };
+      w.__engine = eng;
+      // Dev console helper: __findLevel('quasar', 20) jumps straight into the first seeded level of that environment.
+      w.__findLevel = (env, index = 20) => {
+        for (let seed = 1; seed < 5000; seed++) {
+          const level = generateLevelFromSeed(seed, index);
+          if (level.identity.environment === env) {
+            eng.playLevel(level);
+            return level;
+          }
+        }
+        return null;
+      };
+    }
     const off = eng.on((e) => {
       switch (e.type) {
         case 'phase':
@@ -48,13 +67,17 @@ export function App() {
           if (e.phase !== 'upgrade') setOffer(null);
           if (e.phase === 'playing' || e.phase === 'menu') setSummary(null);
           if (e.phase === 'paused') setPauseView('main');
-          if (e.phase === 'menu' || e.phase === 'gameover') setIntro(null);
+          if (e.phase === 'menu' || e.phase === 'gameover') {
+            setIntro(null);
+            setDiscovery(null);
+          }
           break;
         case 'offer':
           setOffer(e.options);
           break;
         case 'intro':
           setIntro(e.intro);
+          setDiscovery(e.intro.discovery ? { identity: e.intro.identity, key: e.intro.key } : null);
           break;
         case 'gameover':
           setSummary(e.summary);
@@ -109,6 +132,8 @@ export function App() {
           save={save}
           onPlay={play}
           onUpgrades={() => setScreen('upgrades')}
+          onCatalogue={() => setScreen('catalogue')}
+          catalogueSize={getCatalogue().size}
           onHowTo={() => setScreen('howto')}
           onSettings={() => setScreen('settings')}
           sfx={sfx}
@@ -117,6 +142,7 @@ export function App() {
       {engine && phase === 'menu' && screen === 'upgrades' && (
         <ShipUpgrades save={save} store={store} onBack={() => setScreen('main')} sfx={sfx} />
       )}
+      {engine && phase === 'menu' && screen === 'catalogue' && <Catalogue save={save} onBack={() => setScreen('main')} sfx={sfx} />}
       {engine && phase === 'menu' && screen === 'howto' && <HowToPlay onBack={() => setScreen('main')} sfx={sfx} />}
       {engine && phase === 'menu' && screen === 'settings' && (
         <SettingsPanel
@@ -130,6 +156,9 @@ export function App() {
 
       {engine && inRun && <Hud key={runId} engine={engine} touch={touch} showHint={showHint} onPause={() => engine.pause()} />}
       {engine && inRun && intro && <LevelIntroCard intro={intro} onDone={() => setIntro(null)} />}
+      {engine && phase === 'playing' && !intro && discovery && (
+        <DiscoveryToast identity={discovery.identity} toastKey={discovery.key} onDone={() => setDiscovery(null)} />
+      )}
       {engine && phase === 'playing' && touch && <TouchControls engine={engine} />}
 
       {engine && phase === 'upgrade' && offer && (
@@ -140,6 +169,7 @@ export function App() {
         <PauseMenu
           level={engine.hud.level}
           levelName={engine.hud.levelName}
+          scan={engine.currentLevel}
           muted={save.settings.muted}
           onResume={() => engine.resume()}
           onRestart={play}

@@ -7,6 +7,8 @@ import { Renderer } from './render/renderer';
 import { Run } from './run';
 import type { RunSink } from './run';
 import type { Controls } from './player';
+import { progressFrom, recordVisit } from '../progression/discovery';
+import { newlyCompleted } from '../progression/milestones';
 import { UPGRADES, UPGRADE_ORDER } from './upgrades';
 import type { HudMessage, HudState, LevelDef, LevelIntro, MessageTone, RunSummary, SfxName, UpgradeId, UpgradeOffer } from './types';
 
@@ -49,6 +51,8 @@ export class Engine {
   private introKey = 0;
   private destroyed = false;
   private boostPrimed = false;
+  /** Titles of milestones completed during the current run. */
+  private runMilestones: string[] = [];
   readonly hud: HudState = {
     level: 1,
     levelName: '',
@@ -118,16 +122,19 @@ export class Engine {
     this.run.setPreferences(s.sensitivity, s.reducedEffects);
   }
 
-  startRun(): void {
+  startRun(level?: LevelDef): void {
     this.audio.unlock();
     const save = this.store.get();
     this.introKey++;
+    this.runMilestones = [];
     this.run = new Run({
       demo: false,
       sink: this.sink,
       save,
       sensitivity: save.settings.sensitivity,
       reducedEffects: save.settings.reducedEffects,
+      progress: progressFrom(save.journey),
+      level,
     });
     this.resize();
     this.acc = 0;
@@ -194,6 +201,19 @@ export class Engine {
     this.audio.play(name);
   }
 
+  /** The sector currently being played (for the pause screen's scan read-out). */
+  get currentLevel(): LevelDef {
+    return this.run.level;
+  }
+
+  /**
+   * Development aid: jump straight into a specific generated level.
+   * `levelFromCode` in src/generation rebuilds any level from its sector code.
+   */
+  playLevel(level: LevelDef): void {
+    this.startRun(level);
+  }
+
   destroy(): void {
     this.destroyed = true;
     cancelAnimationFrame(this.raf);
@@ -253,8 +273,16 @@ export class Engine {
   private sink: RunSink = {
     sfx: (name, intensity) => this.audio.play(name, intensity),
     message: (text, tone) => this.message(text, tone),
-    levelIntro: (level: LevelDef) => {
+    levelIntro: (level: LevelDef, discovery: boolean) => {
       this.audio.setDrone(level.body.kind);
+      // The visit is saved straight away, so the catalogue fills even if this sector ends the run.
+      const now = new Date().toISOString();
+      this.store.update((d) => {
+        recordVisit(d.journey, level.identity, level.index, now);
+      });
+      this.awardMilestones(Math.max(this.store.get().records.highestLevel, level.index));
+      const rare = level.identity.rarity === 'rare' || level.identity.rarity === 'legendary';
+      if (rare) this.audio.play('upgrade');
       this.emit({
         type: 'intro',
         intro: {
@@ -263,6 +291,8 @@ export class Engine {
           tagline: level.tagline,
           classification: level.classification,
           newMechanics: level.newMechanics,
+          identity: level.identity,
+          discovery,
           key: ++this.introKey,
         },
       });
@@ -274,6 +304,24 @@ export class Engine {
     },
     died: (cause: string) => this.finishRun(cause),
   };
+
+  /** Pay out any milestone that has just been completed. Returns their titles. */
+  private awardMilestones(highestLevel: number): string[] {
+    const save = this.store.get();
+    const fresh = newlyCompleted({ log: save.journey, highestLevel }, save.milestones);
+    if (fresh.length === 0) return [];
+    this.store.update((d) => {
+      for (const m of fresh) {
+        d.milestones.push(m.id);
+        d.credits += m.reward;
+      }
+    });
+    for (const m of fresh) {
+      this.runMilestones.push(m.title);
+      this.message(`MILESTONE · ${m.title}  +${m.reward} CR`, 'upgrade');
+    }
+    return fresh.map((m) => m.title);
+  }
 
   private openOffer(): void {
     this.offerAt = -1;
@@ -318,7 +366,9 @@ export class Engine {
       d.records.asteroidsDestroyed += run.destroyed;
       d.credits += credits;
       d.unlocked = UPGRADE_ORDER.filter((id) => d.unlocked.includes(id) || unlocked.includes(id));
+      d.journey.sectorsCleared += run.levelsCleared;
     });
+    this.awardMilestones(highest);
     const summary: RunSummary = {
       cause,
       level,
@@ -334,6 +384,8 @@ export class Engine {
       newBestTime,
       unlocked,
       upgrades: run.upgradesSummary,
+      discoveries: run.visits.filter((v) => v.discovery).map((v) => v.identity.objectName),
+      milestones: [...this.runMilestones],
     };
     this.audio.setThrust(0);
     this.audio.play('gameover');

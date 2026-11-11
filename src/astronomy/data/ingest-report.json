@@ -1,0 +1,65 @@
+{
+  "generatedAt": "2026-11-11T02:30:55.715Z",
+  "total": 2633,
+  "added": 0,
+  "updated": 22,
+  "duplicatesMerged": 0,
+  "rejected": [],
+  "byCategory": {
+    "exoplanet": 700,
+    "star": 725,
+    "planet": 8,
+    "moon": 21,
+    "dwarf-planet": 5,
+    "quasar": 17,
+    "galaxy": 87,
+    "asteroid": 411,
+    "comet": 329,
+    "stellar-remnant": 171,
+    "nebula": 159
+  },
+  "withImage": 62,
+  "sprites": 62,
+  "sources": {
+    "sbdb": {
+      "ok": true,
+      "count": 861,
+      "note": "largest asteroids: 202; named near-Earth asteroids: 103; trans-Neptunian objects and centaurs: 75; Jupiter trojans: 44; Mars crossers: 12; numbered periodic comets: 320; comets with measured nuclei: 105",
+      "fetchedAt": "2026-11-10T15:02:21.478Z"
+    },
+    "horizons": {
+      "ok": true,
+      "count": 31,
+      "note": "31 bodies at epoch 2026-11-10",
+      "fetchedAt": "2026-11-10T15:02:21.478Z"
+    },
+    "exoplanets": {
+      "ok": true,
+      "count": 700,
+      "note": "FALLBACK exoplanet.eu: 700 (NASA Exoplanet Archive: HTTP 503 from exoplanetarchive.ipac.caltech.edu)",
+      "fetchedAt": "2026-11-11T01:37:11.254Z"
+    },
+    "simbad": {
+      "ok": true,
+      "count": 1054,
+      "note": "1054 objects (315 named, 624 with Teff)",
+      "fetchedAt": "2026-11-11T02:30:55.715Z"
+    },
+    "ned": {
+      "ok": true,
+      "count": 105,
+      "note": "105 resolved, 2 unresolved or untyped, 0 failed",
+      "fetchedAt": "2026-11-10T15:02:21.478Z"
+    },
+    "images": {
+      "ok": true,
+      "count": 62,
+      "note": "62 matched of 455 searched, 62 pixel sprites",
+      "fetchedAt": "2026-11-11T01:37:11.254Z"
+    }
+  },
+  "http": {
+    "requests": 1,
+    "cacheHits": 53
+  }
+}

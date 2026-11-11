@@ -124,7 +124,6 @@ export function frameIndex(angle: number, frames: number): number {
 // ---------------------------------------------------------------- asteroids
 
 const ROCK_RAMP = ['#1d1630', '#3a2f52', '#5f5478', '#8b81a3', '#c0b7d4'];
-const ROCK_RAMP_RGB = ROCK_RAMP.map(hexToRgb);
 const L3 = (() => {
   const v = [-0.55, -0.6, 0.58];
   const l = Math.hypot(v[0], v[1], v[2]);
@@ -165,7 +164,7 @@ function inPoly(x: number, y: number, v: [number, number][]): boolean {
   return inside;
 }
 
-function renderRock(shape: RockShape, radiusPx: number, angle: number): HTMLCanvasElement {
+function renderRock(shape: RockShape, radiusPx: number, angle: number, rampRgb: [number, number, number][]): HTMLCanvasElement {
   const size = radiusPx * 2 + 3;
   const c = makeCanvas(size, size);
   const g = ctx2d(c);
@@ -197,10 +196,10 @@ function renderRock(shape: RockShape, radiusPx: number, angle: number): HTMLCanv
           light += cd > cr * 0.7 ? 0.12 : -0.28 - side * 0.12;
         }
       }
-      const levels = ROCK_RAMP.length;
+      const levels = rampRgb.length;
       let idx = Math.floor(light * (levels - 1) + bayer(x, y) * 0.9);
       idx = Math.max(0, Math.min(levels - 1, idx));
-      const [r, gg, b] = ROCK_RAMP_RGB[idx];
+      const [r, gg, b] = rampRgb[idx];
       const i = (y * size + x) * 4;
       img.data[i] = r;
       img.data[i + 1] = gg;
@@ -212,17 +211,31 @@ function renderRock(shape: RockShape, radiusPx: number, angle: number): HTMLCanv
   return c;
 }
 
-/** frames[size][variant][rotationFrame] */
-export function buildRockSprites(zoom: number): HTMLCanvasElement[][][] {
-  const rng = new Rng(4242);
+export const ICE_RAMP = ['#16304a', '#2f5f8c', '#6fb0d8', '#bfe8ff', '#ffffff'];
+export const ICE_RADII = [2.8, 3.8, 5] as const;
+
+/**
+ * frames[size][variant][rotationFrame]
+ *
+ * `rampHex` is the level's rock palette: it comes from the asteroid's taxonomic class when the level
+ * is about a real small body, so a carbonaceous C-type field is dark and an S-type field is tan.
+ */
+export function buildRockSprites(
+  zoom: number,
+  rampHex: readonly string[] = ROCK_RAMP,
+  radii: readonly number[] = ASTEROID_RADII,
+  seed = 4242,
+): HTMLCanvasElement[][][] {
+  const rng = new Rng(seed);
+  const rampRgb = (rampHex.length >= 3 ? rampHex : ROCK_RAMP).map(hexToRgb);
   const out: HTMLCanvasElement[][][] = [];
   for (let s = 0; s < 3; s++) {
-    const rp = Math.max(2, Math.round(ASTEROID_RADII[s] * zoom));
+    const rp = Math.max(2, Math.round(radii[s] * zoom));
     const sizeSet: HTMLCanvasElement[][] = [];
     for (let v = 0; v < ASTEROID_VARIANTS; v++) {
       const shape = makeRockShape(rng, 7 + s * 2);
       const frames: HTMLCanvasElement[] = [];
-      for (let f = 0; f < ROCK_FRAMES; f++) frames.push(renderRock(shape, rp, (f / ROCK_FRAMES) * TAU));
+      for (let f = 0; f < ROCK_FRAMES; f++) frames.push(renderRock(shape, rp, (f / ROCK_FRAMES) * TAU, rampRgb));
       sizeSet.push(frames);
     }
     out.push(sizeSet);
