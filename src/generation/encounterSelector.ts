@@ -16,6 +16,7 @@
  */
 import { getCatalogue } from '../astronomy/database/catalogue';
 import type { Catalogue } from '../astronomy/database/catalogue';
+import type { MissionKind } from '../game/missions/types';
 import type { EnvFamily } from '../game/types';
 import { EXTREME_GRAVITY, environment } from './environments';
 import type { EnvId } from './environments';
@@ -31,6 +32,8 @@ export interface RunHistory {
   objects: string[];
   /** Sectors since the last rare or legendary encounter. */
   sinceRare: number;
+  /** Mission of each sector played (absent in histories that predate missions). */
+  missions?: MissionKind[];
 }
 
 /** What the player has seen across all runs. */
@@ -95,10 +98,12 @@ export function selectEncounter(
   history: RunHistory = EMPTY_HISTORY,
   progress: PlayerProgress = EMPTY_PROGRESS,
   catalogue: Catalogue = getCatalogue(),
+  /** Environments the sector's mission can take place in (empty = any). */
+  allowed: readonly EnvId[] = [],
 ): Selection {
   let best: Selection | null = null;
   for (let attempt = 0; attempt < CANDIDATES; attempt++) {
-    const encounter = rollEncounter(candidateSeed(runSeed, index, attempt), index, catalogue);
+    const encounter = rollEncounter(candidateSeed(runSeed, index, attempt), index, catalogue, allowed);
     const score = scoreEncounter(encounter, history, progress);
     if (!best || score > best.score) best = { encounter, attempt, score };
   }
@@ -106,11 +111,13 @@ export function selectEncounter(
 }
 
 /** Append a played encounter to the run history (returns a new object). */
-export function recordEncounter(history: RunHistory, enc: Encounter, objectId: string): RunHistory {
+export function recordEncounter(history: RunHistory, enc: Encounter, objectId: string, mission?: MissionKind): RunHistory {
   const rare = enc.rarity === 'rare' || enc.rarity === 'legendary';
-  return {
+  const out: RunHistory = {
     environments: [...history.environments, enc.env],
     objects: [...history.objects, objectId],
     sinceRare: rare ? 0 : history.sinceRare + 1,
   };
+  if (mission || history.missions) out.missions = [...(history.missions ?? []), ...(mission ? [mission] : [])];
+  return out;
 }

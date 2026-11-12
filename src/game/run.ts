@@ -3,7 +3,11 @@ import { Rng } from './rng';
 import { clamp, easeInCubic, easeOutBack, lerp, TAU } from './math';
 import { eulerStep, gravityAt, leapfrogStep } from './physics';
 import type { Attractor } from './physics';
-import { circularSpeed, evaluateStability, orbitInfo, predictTrajectory } from './orbital';
+import { circularSpeed, evaluateStability, freeInnerLimit, orbitInfo, predictTrajectory } from './orbital';
+import { createMission } from './missions/controllers';
+import type { Mission } from './missions/runtime';
+import type { MissionDebrief, MissionKind } from './missions/types';
+import { scoreMultiplier } from './modifiers';
 import { hash32 } from '../generation/seed';
 import { recordEncounter } from '../generation/encounterSelector';
 import type { PlayerProgress, RunHistory } from '../generation/encounterSelector';
@@ -28,8 +32,10 @@ import type {
   LevelDef,
   LevelIdentity,
   MessageTone,
+  ModifierKind,
   Mote,
   PermanentId,
+  RunModifierId,
   SfxName,
   StabilityReason,
   StormState,
@@ -43,9 +49,11 @@ export interface RunSink {
   sfx(name: SfxName, intensity?: number): void;
   message(text: string, tone: MessageTone): void;
   /** `discovery` is true when the player has never met this level's object before. */
-  levelIntro(level: LevelDef, discovery: boolean): void;
+  levelIntro(level: LevelDef, discovery: boolean, newMission: boolean): void;
   upgradeReady(): void;
   died(cause: string): void;
+  /** A sector's mission ended (completed or abandoned by a forced jump). */
+  missionComplete?(debrief: MissionDebrief): void;
 }
 
 export interface ShockRing {
@@ -86,6 +94,7 @@ const DEBRIS_COLORS = ['#c9d3ea', '#8a96b8', '#ff8a3d'];
 const COMET_COLORS = ['#e8f0ff', '#7ffcff', '#3ef2ff'];
 const BOMB_COLORS = ['#ffd890', '#ff8a3d', '#ff4d5e'];
 const STAR_HAZARD_COLORS = ['#ffffff', '#ffd890', '#b8c4ff'];
+const BOLT_COLORS = ['#ff4d5e', '#ffc94d', '#ffffff'];
 const BURST_COLORS: Record<HazardKind, string[]> = {
   asteroid: ROCK_COLORS,
   debris: DEBRIS_COLORS,
@@ -93,10 +102,11 @@ const BURST_COLORS: Record<HazardKind, string[]> = {
   ice: COMET_COLORS,
   bomb: BOMB_COLORS,
   star: STAR_HAZARD_COLORS,
+  bolt: BOLT_COLORS,
 };
-const BURST_COUNT: Record<HazardKind, number> = { asteroid: 0, debris: 6, comet: 18, ice: 9, bomb: 12, star: 22 };
+const BURST_COUNT: Record<HazardKind, number> = { asteroid: 0, debris: 6, comet: 18, ice: 9, bomb: 12, star: 22, bolt: 8 };
 /** Fraction of relative velocity transferred to the ship on impact. */
-const IMPACT_MASS: Record<HazardKind, number> = { asteroid: 0, debris: 0.05, comet: 0.12, ice: 0.07, bomb: 0.08, star: 0.2 };
+const IMPACT_MASS: Record<HazardKind, number> = { asteroid: 0, debris: 0.05, comet: 0.12, ice: 0.07, bomb: 0.08, star: 0.2, bolt: 0.06 };
 const SHIP_COLORS = ['#e8f0ff', '#3ef2ff', '#9b5cff', '#ffc94d', '#ff8a3d'];
 
 export interface RunOptions {
@@ -112,6 +122,10 @@ export interface RunOptions {
   noSpawns?: boolean;
   /** Start from this exact level (e.g. one rebuilt from a level code) instead of sector 1. */
   level?: LevelDef;
+  /** Difficulty modifiers chosen for this run. */
+  modifiers?: RunModifierId[];
+  /** Play only this one sector, then end the run (mission practice). */
+  single?: boolean;
 }
 
 /**
@@ -121,10 +135,31 @@ export interface RunOptions {
 export class Run {
   readonly demo: boolean;
   readonly seed: number;
-  private sink: RunSink;
-  private rng: Rng;
-  private fx: Rng;
+  readonly sink: RunSink;
+  /** Gameplay random stream (seeded). */
+  readonly rng: Rng;
+  /** Cosmetic random stream. */
+  readonly fx: Rng;
   level: LevelDef;
+  /** The live objective of the current sector. */
+  mission!: Mission;
+  /** Rotation of the mission frame: the angle at which the ship entered this sector. */
+  frameAngle = 0;
+  /** Hazard systems currently allowed to spawn, and how fast (set by the mission). */
+  spawnMods = new Set<ModifierKind>();
+  spawnRate = 1;
+  /** Next gravity wave: +1 pushes outward, -1 pulls inward; and its strength multiplier. */
+  waveSign = 1;
+  waveMul = 1;
+  readonly modifiers: ReadonlySet<RunModifierId>;
+  readonly scoreMul: number;
+  readonly single: boolean;
+  private hazardRateMul = 1;
+  /** Every sector's report, in order. */
+  readonly debriefs: MissionDebrief[] = [];
+  readonly missionsSeen = new Set<MissionKind>();
+  readonly bossesDefeated: MissionKind[] = [];
+  private debriefKey = 0;
   levelIndex = 1;
   phase: RunPhase = 'intro';
   phaseTime = 0;
@@ -182,7 +217,7 @@ export class Run {
   /** True while the ship is inside a drag zone. */
   inDrag = false;
   private mechMessages = new Set<string>();
-  private noSpawns: boolean;
+  readonly noSpawns: boolean;
 
   // ---- journey
   private history: RunHistory = { environments: [], objects: [], sinceRare: 0 };
@@ -203,7 +238,7 @@ export class Run {
 
   stacks: Stacks = emptyStacks();
   mods: RunMods;
-  private perm: Record<PermanentId, number>;
+  readonly perm: Record<PermanentId, number>;
   private unlocked: Set<UpgradeId>;
   overdrive = 0;
   temporalT = 0;
@@ -232,6 +267,7 @@ export class Run {
   trajCrashed = false;
 
   private tmp = { x: 0, y: 0 };
+  private tmp2 = { x: 0, y: 0 };
 
   constructor(opts: RunOptions) {
     this.demo = opts.demo;
@@ -241,13 +277,20 @@ export class Run {
     this.fx = new Rng(this.seed ^ 0xa5a5a5);
     this.sensitivity = opts.sensitivity ?? 1;
     this.reducedEffects = opts.reducedEffects ?? false;
-    this.perm = opts.save ? { ...opts.save.permanent } : { thrusters: 0, hull: 0, collector: 0, shields: 0, reactor: 0 };
+    this.perm = opts.save
+      ? { ...opts.save.permanent }
+      : { thrusters: 0, hull: 0, collector: 0, shields: 0, reactor: 0, tanks: 0, tractor: 0, heatshield: 0, gyro: 0, phase: 0 };
     this.unlocked = new Set(opts.save?.unlocked ?? []);
     this.mods = computeMods(this.stacks, this.perm);
     this.particles = new Particles(700);
     this.particles.limit = this.reducedEffects ? 260 : 700;
+    this.modifiers = new Set(this.demo ? [] : (opts.modifiers ?? []));
+    this.scoreMul = scoreMultiplier([...this.modifiers]);
+    this.single = opts.single ?? false;
+    this.hazardRateMul = (this.modifiers.has('swarm') ? 1.5 : 1) * (this.modifiers.has('calm') ? 0.6 : 1);
+    const hullMul = (this.modifiers.has('glass') ? 0.5 : 1) * (this.modifiers.has('calm') ? 1.25 : 1);
 
-    this.ship = new Ship(CONFIG.HULL_BASE + this.perm.hull * 12);
+    this.ship = new Ship(Math.round((CONFIG.HULL_BASE + this.perm.hull * 12) * hullMul));
     this.ship.boostCdMax = CONFIG.BOOST_COOLDOWN * this.mods.boostCdMul;
     if (this.perm.shields > 0) this.ship.shield = 1;
     this.energy = this.perm.reactor * 3;
@@ -268,14 +311,14 @@ export class Run {
 
   /** Pick and build the next sector from the journey so far. */
   private chooseLevel(index: number): LevelDef {
-    const { level, encounter } = generateLevel(
+    const { level, encounter, mission } = generateLevel(
       index,
       this.seed,
       this.history,
       { discovered: this.discovered, environmentsSeen: this.environmentsSeen },
       this.seenMods,
     );
-    this.history = recordEncounter(this.history, encounter, level.identity.objectId);
+    this.history = recordEncounter(this.history, encounter, level.identity.objectId, mission.kind);
     return level;
   }
 
@@ -286,7 +329,10 @@ export class Run {
     this.discovered.add(id.objectId);
     this.environmentsSeen.add(id.environment);
     this.visits.push({ index: this.level.index, identity: id, discovery });
-    this.sink.levelIntro(this.level, discovery);
+    const kind = this.level.mission.kind;
+    const newMission = !this.missionsSeen.has(kind);
+    this.missionsSeen.add(kind);
+    this.sink.levelIntro(this.level, discovery, newMission);
   }
 
   /** Position of the primary body (it moves in binary systems). */
@@ -374,7 +420,8 @@ export class Run {
     // eccentric configuration it starts at the periapsis of an ellipse that stays inside the band.
     const s = this.ship;
     const angle = first ? -Math.PI / 2 : Math.atan2(s.y, s.x);
-    const dir = first ? 1 : Math.sign(s.x * s.vy - s.y * s.vx) || 1;
+    // Every sector is entered on a prograde orbit; mission layouts are drawn relative to it.
+    const dir = 1;
     const a = L.startRadius;
     const e = this.demo ? 0 : clamp(Math.min(L.startEcc, 1 - (L.safeMin + 10) / a, (L.safeMax - 10) / a - 1), 0, 0.3);
     const r = a * (1 - e);
@@ -389,6 +436,15 @@ export class Run {
     s.gy = this.tmp.y;
     s.clearTrail();
     if (!first) s.stability = Math.min(100, s.stability + 40);
+    s.boostCdMax = CONFIG.BOOST_COOLDOWN * this.mods.boostCdMul;
+
+    this.waveSign = 1;
+    this.waveMul = 1;
+    this.frameAngle = angle;
+    this.mission = createMission(this, L.mission);
+    this.spawnMods = new Set(L.modifiers);
+    this.spawnRate = 1;
+    this.mission.setup();
   }
 
   /**
@@ -461,7 +517,8 @@ export class Run {
     const L = this.level;
     placeAttractors(L, this.simTime, this.attractors);
     const wob = L.mechanics.muWobble;
-    if (wob) this.attractors[0].mu = L.body.mu * (1 + wob.amp * Math.sin((TAU * this.simTime) / wob.period));
+    const grow = this.mission ? this.mission.muScale : 1;
+    this.attractors[0].mu = L.body.mu * grow * (wob ? 1 + wob.amp * Math.sin((TAU * this.simTime) / wob.period) : 1);
   }
 
   /** Rails callback for trajectory prediction. */
@@ -474,19 +531,43 @@ export class Run {
     const L = this.level;
     if (L.body.heatRadius <= 0) return 0;
     const p = L.mechanics.pulsation;
-    return L.body.heatRadius * (1 + (p ? p.amp * this.pulse : 0)) * (1 + 0.18 * this.seasonK);
+    const grow = this.mission ? this.mission.bodyMul : 1;
+    return L.body.heatRadius * (1 + (p ? p.amp * this.pulse : 0)) * (1 + 0.18 * this.seasonK) * grow;
   }
 
-  /** Visual swell of a pulsating star. */
+  /** Visual swell of a pulsating star (and the growth of a feeding black hole). */
   get bodyPulse(): number {
     const p = this.level.mechanics.pulsation;
-    return p ? 1 + 0.09 * p.amp * 2.6 * this.pulse : 1;
+    const grow = this.mission ? this.mission.bodyMul : 1;
+    return (p ? 1 + 0.09 * p.amp * 2.6 * this.pulse : 1) * grow;
+  }
+
+  private fieldAccel = (x: number, y: number, vx: number, vy: number, out: { x: number; y: number }): void => {
+    this.mission.fieldAccel(x, y, vx, vy, out);
+  };
+
+  /** Surface radii of the companions, for the trajectory preview's impact check. */
+  get companionRadii(): number[] {
+    return this.level.companions.map((c) => c.radius);
+  }
+
+  /** Free flight: below this radius the ship is too close to the body. */
+  get innerLimit(): number {
+    const L = this.level;
+    return L.mission.orbitRule === 'free' ? freeInnerLimit(L.body.radius * this.bodyPulse, L.safeMin) : L.safeMin;
+  }
+
+  /** Free flight: the edge of the arena; otherwise the outer ring of the band. */
+  get outerLimit(): number {
+    const L = this.level;
+    return L.mission.orbitRule === 'free' ? L.mission.arena : L.safeMax;
   }
 
   // ------------------------------------------------------------------ derived values for rendering / HUD
 
   get levelProgress(): number {
-    return clamp(this.levelTime / this.level.duration, 0, 1);
+    if (this.demo || !this.mission) return clamp(this.levelTime / this.level.duration, 0, 1);
+    return this.mission.objective().progress;
   }
 
   get bodyScale(): number {
@@ -537,8 +618,9 @@ export class Run {
       this.seasonK = k;
     }
 
-    if (!this.demo && this.playing) {
-      this.time += dt;
+    if (!this.demo && this.playing) this.time += dt;
+    // Survival is scored by time held; objective missions are scored by how well they are flown.
+    if (!this.demo && this.playing && this.level.mission.kind === 'survival') {
       let mult = (1 + 0.2 * (this.levelIndex - 1)) * (this.overdrive > 0 ? 1.5 : 1);
       if (M.depthBonus && this.ship.visible) {
         // Deep orbits near a black hole pay more: the closer to the inner edge, the higher the multiplier.
@@ -554,10 +636,7 @@ export class Run {
         if (this.phaseTime >= CONFIG.INTRO_TIME) this.setPhase('active');
         break;
       case 'active':
-        if (!this.demo) {
-          this.levelTime += dt;
-          if (this.levelTime >= this.level.duration) this.beginClearing();
-        }
+        if (!this.demo) this.levelTime += dt;
         this.updateSpawns(dt);
         break;
       case 'clearing':
@@ -569,7 +648,14 @@ export class Run {
         }
         break;
       case 'warping':
-        if (this.phaseTime >= CONFIG.WARP_TIME) this.nextLevel();
+        if (this.phaseTime >= CONFIG.WARP_TIME) {
+          if (this.single) {
+            // Mission practice: one sector, then back to the debrief.
+            this.setPhase('dead');
+            const last = this.debriefs[this.debriefs.length - 1];
+            this.sink.died(last?.success ? `${last.title} CLEARED · RANK ${last.rank}` : `${this.level.mission.title} · ${last?.failure ?? 'ABANDONED'}`);
+          } else this.nextLevel();
+        }
         break;
       case 'dying':
         if (this.deathMode === 'spin' && this.ship.visible && this.phaseTime > 1.0) this.explodeShip();
@@ -583,6 +669,7 @@ export class Run {
     }
 
     this.updateShip(dt, this.phase === 'intro' || this.phase === 'active' || this.phase === 'clearing' ? controls : NO_CONTROLS);
+    if (!this.demo && this.phase !== 'dead') this.mission.update(dt, this.phase === 'active');
     this.updateEnvironment(hdt);
     this.updateHazards(hdt);
     this.updateMotes(dt);
@@ -592,6 +679,8 @@ export class Run {
     if (!this.demo && this.phase === 'active') {
       this.checkTemporal();
       this.checkMilestones();
+      if (this.mission.complete) this.beginClearing();
+      else if (this.mission.failure) this.forcedJump();
     }
   }
 
@@ -604,11 +693,16 @@ export class Run {
     this.setPhase('clearing');
     this.levelsCleared++;
     const rarity = this.level.identity.rarity;
-    // Surviving a rare encounter is worth more.
-    const bonus = Math.round(200 * this.levelIndex * (rarity === 'legendary' ? 2 : rarity === 'rare' ? 1.5 : 1));
+    const report = this.mission.debrief(++this.debriefKey);
+    // Surviving a rare encounter is worth more; so is flying it well (the rank multiplier).
+    const bonus = Math.round(report.score * (rarity === 'legendary' ? 2 : rarity === 'rare' ? 1.5 : 1));
+    report.score = bonus;
     this.score += bonus;
+    this.debriefs.push(report);
+    if (report.success && report.boss && !this.bossesDefeated.includes(report.kind)) this.bossesDefeated.push(report.kind);
+    this.sink.missionComplete?.(report);
     this.sink.sfx('clear');
-    this.sink.message(`SECTOR CLEAR  +${bonus}`, 'good');
+    this.sink.message(report.success ? `${report.boss ? 'ENCOUNTER' : 'MISSION'} COMPLETE · RANK ${report.rank}  +${bonus}` : `${report.failure}  +${bonus}`, report.success ? 'good' : 'warn');
     this.addText(this.ship.x, this.ship.y - 12, `+${bonus}`, PALETTE.green);
     this.flares = [];
     this.waves = [];
@@ -618,6 +712,18 @@ export class Run {
     this.empT = 0;
     this.pingR = 0;
     if (this.storm.state !== 'idle') this.storm.state = 'idle';
+  }
+
+  /** The jump window closed with the objective unmet: the drive fires anyway and the hull pays. */
+  private forcedJump(): void {
+    const s = this.ship;
+    this.sink.message('JUMP WINDOW CLOSED · FORCED JUMP · HULL STRESS', 'danger');
+    this.sink.sfx('critical');
+    this.shake = Math.max(this.shake, 6);
+    this.hurtFlash = 1;
+    this.damage(Math.round(s.hullMax * 0.25), true);
+    if (this.phase === 'dying' || this.phase === 'dead') return;
+    this.beginClearing();
   }
 
   private updateClearing(): void {
@@ -680,6 +786,10 @@ export class Run {
       const online = this.empT <= 0;
       t = online ? (c.accel ? 1 : 0) - (c.brake ? 1 : 0) : 0;
       lat = online ? c.lateral : 0;
+      // The mission may scramble the controls (ion surges) or run the tanks dry.
+      const f = this.mission.filterControls(t, lat, dt);
+      t = f.t;
+      lat = f.lat;
       ex += px * t * thrust;
       ey += py * t * thrust;
       if (lat !== 0) {
@@ -688,7 +798,8 @@ export class Run {
         ey += px * lat * lt;
       }
       if (c.boost && s.boostCd <= 0) this.boost(t, lat, px, py);
-      if (this.mods.stabilizer > 0) {
+      // Auto-circularising would fight a transfer orbit, so it only works while holding a band.
+      if (this.mods.stabilizer > 0 && L.mission.orbitRule === 'band') {
         const r = Math.hypot(s.x, s.y) || 1;
         const rx = s.x / r;
         const ry = s.y / r;
@@ -708,6 +819,10 @@ export class Run {
     }
 
     if (!this.demo) {
+      // Mission objects: magnetic fields, ionised gas, docking tractors.
+      this.mission.shipAccel(this.tmp2);
+      ex += this.tmp2.x;
+      ey += this.tmp2.y;
       // Drag zones (ring plane, upper atmosphere) bleed speed in proportion to it.
       this.inDrag = false;
       for (const z of M.dragZones) {
@@ -766,7 +881,7 @@ export class Run {
         const c = L.companions[i];
         const m = this.attractors[i + 1];
         if (m && circlesOverlap(s.x, s.y, s.radius * 0.6, m.x, m.y, c.radius)) {
-          const what = c.kind === 'star' ? 'INCINERATED BY THE COMPANION STAR' : `CRASHED INTO ${c.name ?? 'THE MOON'}`;
+          const what = c.kind === 'star' ? 'INCINERATED BY THE COMPANION STAR' : `CRASHED INTO ${c.name ?? (c.kind === 'planet' ? 'THE PLANET' : 'THE MOON')}`;
           this.kill(what, c.kind === 'star' ? 'consumed' : 'explode');
           return;
         }
@@ -780,8 +895,9 @@ export class Run {
     let heatDepth = -1;
     let heatDps = 0;
     const hr = this.heatRadiusNow;
+    const br = L.body.radius * this.bodyPulse;
     if (hr > 0 && r < hr) {
-      heatDepth = clamp(1 - (r - L.body.radius) / (hr - L.body.radius), 0, 1);
+      heatDepth = clamp(1 - (r - br) / Math.max(1, hr - br), 0, 1);
       heatDps = L.body.heatDps;
     }
     for (let i = 0; i < L.companions.length; i++) {
@@ -805,10 +921,12 @@ export class Run {
     }
     if (heatDepth >= 0 && this.phase !== 'clearing') {
       const depth = heatDepth;
-      zoneDrain = 18 + 14 * depth;
+      // An aegis bubble keeps the heat out entirely; shielding plates soften it.
+      const aegis = this.mission.aegisT > 0;
+      zoneDrain = aegis ? 0 : 18 + 14 * depth;
       zoneReason = 'HEAT';
-      if (s.boostT <= 0) {
-        this.damage(heatDps * (0.6 + 0.6 * depth) * dt, false);
+      if (s.boostT <= 0 && !aegis) {
+        this.damage(heatDps * (0.6 + 0.6 * depth) * this.mods.heatMul * dt, false);
         this.hurtFlash = Math.max(this.hurtFlash, 0.35);
       }
       this.heatSoundT -= dt;
@@ -826,13 +944,15 @@ export class Run {
       // The orbit is measured about the barycentre against everything inside the band.
       const info = orbitInfo(s.x, s.y, s.vx, s.vy, L.orbitMu);
       const res = evaluateStability(info, {
-        bodyRadius: L.body.radius,
+        bodyRadius: L.body.radius * this.bodyPulse,
         safeMin: L.safeMin,
         safeMax: L.safeMax,
         outerLimit: L.outerLimit,
         zoneDrain,
         zoneReason,
         stabilizer: this.mods.stabilizer,
+        mode: L.mission.orbitRule,
+        arena: L.mission.arena,
       });
       let rate = res.rate;
       if (rate < 0) rate *= L.stabilityDrain;
@@ -858,7 +978,7 @@ export class Run {
   }
 
   /** Show a mechanic's explanatory message once per sector. */
-  private note(key: string, text: string, tone: MessageTone): void {
+  note(key: string, text: string, tone: MessageTone): void {
     if (this.mechMessages.has(key) || this.demo) return;
     this.mechMessages.add(key);
     this.sink.message(text, tone);
@@ -908,7 +1028,7 @@ export class Run {
 
   private boost(t: number, lat: number, px: number, py: number): void {
     const s = this.ship;
-    s.boostT = CONFIG.BOOST_TIME;
+    s.boostT = CONFIG.BOOST_TIME * this.mods.boostTimeMul;
     s.boostCd = s.boostCdMax;
     const dv = CONFIG.BOOST_DV * this.mods.boostDvMul;
     let dx = px;
@@ -935,6 +1055,7 @@ export class Run {
   private damage(amount: number, impactSound: boolean): void {
     const s = this.ship;
     s.hull -= amount;
+    this.mission?.onDamage(amount);
     if (impactSound) this.sink.sfx('collide');
     if (s.hull <= 0) {
       s.hull = 0;
@@ -942,7 +1063,7 @@ export class Run {
     }
   }
 
-  private kill(cause: string, mode: 'explode' | 'spin' | 'consumed'): void {
+  kill(cause: string, mode: 'explode' | 'spin' | 'consumed'): void {
     if (this.demo || this.phase === 'dying' || this.phase === 'dead') return;
     this.deathCause = cause;
     this.deathMode = mode;
@@ -993,7 +1114,9 @@ export class Run {
     const M = L.mechanics;
     if (this.noSpawns) return;
     // Near periapsis of an eccentric orbit everything arrives faster.
-    const dt = realDt * (1 + 1.2 * this.seasonK);
+    const envDt = this.demo || this.spawnRate > 0 ? realDt * (1 + 1.2 * this.seasonK) : 0;
+    // The mission decides which hazard streams run and how hard (waves, lulls, ambient traffic).
+    const dt = this.demo ? envDt : envDt * this.spawnRate * this.hazardRateMul;
 
     // The environment's main stream of incoming bodies.
     this.nextAsteroid -= dt;
@@ -1024,10 +1147,10 @@ export class Run {
       this.nextMote -= dt;
       return;
     }
-    const mods = L.modifiers;
+    const mods = this.spawnMods;
 
     if (M.eruptions) {
-      this.nextEruption -= dt;
+      this.nextEruption -= envDt;
       if (this.nextEruption <= 0) {
         const s = this.ship;
         const rr = Math.max(30, Math.hypot(s.x, s.y));
@@ -1052,7 +1175,7 @@ export class Run {
       }
     }
 
-    if (mods.includes('comets')) {
+    if (mods.has('comets')) {
       this.nextComet -= dt;
       if (this.nextComet <= 0) {
         const count = 1 + this.rng.int(0, Math.min(2, Math.floor((this.levelIndex - 4) / 4)));
@@ -1072,7 +1195,7 @@ export class Run {
       }
     }
 
-    if (mods.includes('debris')) {
+    if (mods.has('debris')) {
       this.nextDebris -= dt;
       if (this.nextDebris <= 0) {
         this.spawnDebrisSwarm();
@@ -1084,7 +1207,7 @@ export class Run {
       }
     }
 
-    if (mods.includes('flares')) {
+    if (mods.has('flares')) {
       this.nextFlare -= dt;
       if (this.nextFlare <= 0) {
         this.spawnFlare();
@@ -1092,7 +1215,7 @@ export class Run {
       }
     }
 
-    if (mods.includes('waves')) {
+    if (mods.has('waves')) {
       this.nextWave -= dt;
       if (this.nextWave <= 0 && this.waveCharge <= 0) {
         this.waveCharge = 1.1;
@@ -1105,7 +1228,7 @@ export class Run {
       }
     }
 
-    if (mods.includes('storm')) {
+    if (mods.has('storm')) {
       const st = this.storm;
       if (st.state === 'idle') {
         st.next -= dt;
@@ -1422,7 +1545,12 @@ export class Run {
     if (this.waveCharge > 0) {
       this.waveCharge -= dt;
       if (this.waveCharge <= 0) {
-        this.waves.push({ id: this.waveSeq++, r: this.level.body.radius, speed: 150, strength: 13 * M.waveStrength, maxR: 300, charge: 0, shipHit: false });
+        // Negative strength = a pull wave, dragging everything it crosses inward.
+        const strength = 13 * M.waveStrength * this.waveSign * this.waveMul;
+        const maxR = Math.max(300, this.level.mission.orbitRule === 'free' ? this.level.mission.arena + 40 : 0);
+        this.waves.push({ id: this.waveSeq++, r: this.level.body.radius, speed: 150, strength, maxR, charge: 0, shipHit: false });
+        this.waveSign = 1;
+        this.waveMul = 1;
         this.sink.sfx('wave');
         this.shake = Math.max(this.shake, 2.5);
       }
@@ -1545,6 +1673,10 @@ export class Run {
     const bx = this.bx;
     const by = this.by;
     const bodyR = L.body.radius * this.bodyPulse;
+    // Travel missions use a bigger arena than one screen: hazards live until they leave it.
+    const arena = L.mission.orbitRule === 'free' ? L.mission.arena : 0;
+    const cullW = Math.max(this.viewHalfW, arena) + 170;
+    const cullH = Math.max(this.viewHalfH, arena) + 170;
 
     for (const h of this.hazards) {
       if (!h.alive) continue;
@@ -1610,13 +1742,13 @@ export class Run {
 
       // Leaving the arena.
       if (!h.orbiting) {
-        const out = Math.abs(h.x) > this.viewHalfW + 170 || Math.abs(h.y) > this.viewHalfH + 170;
+        const out = Math.abs(h.x) > cullW || Math.abs(h.y) > cullH;
         if (out && h.x * h.vx + h.y * h.vy > 0) {
           h.alive = false;
           if (!this.demo && h.entered && !h.hitPlayer) this.avoided++;
           continue;
         }
-        if (h.age > 60) h.alive = false;
+        if (h.age > 60 || (h.kind === 'bolt' && h.age > 5)) h.alive = false;
       }
 
       if (!shipCollides || h.offPlane) continue;
@@ -1634,6 +1766,13 @@ export class Run {
           continue;
         }
         if (s.invuln > 0) continue;
+        if (this.mission.aegisT > 0) {
+          // The aegis bubble shatters whatever touches it and costs nothing.
+          this.destroyed++;
+          this.rings.push({ x: s.x, y: s.y, r: 6, maxR: 18, t: 0, dur: 0.3, color: PALETTE.cyan });
+          this.destroyHazard(h, 'shield');
+          continue;
+        }
         if (s.shield > 0) {
           this.absorbWithShield();
           this.destroyed++;
@@ -1976,6 +2115,121 @@ export class Run {
     }
   }
 
+  // ------------------------------------------------------------------ mission API
+
+  modifierOn(id: RunModifierId): boolean {
+    return this.modifiers.has(id);
+  }
+
+  /** Which hazard streams run, and at what rate (0 = paused). */
+  setSpawn(mods: Set<ModifierKind>, rate: number): void {
+    this.spawnMods = mods;
+    this.spawnRate = rate;
+  }
+
+  /** Charge a gravitational wave: +1 pushes outward, -1 pulls inward. */
+  launchWave(sign: number, mul: number): void {
+    this.waveSign = sign;
+    this.waveMul = mul;
+    this.waveCharge = 1.1;
+    this.sink.sfx('warning');
+  }
+
+  /** Damage from a mission object. Returns true if it connected (or an aegis bubble took it). */
+  hitShip(dmg: number, label: string, kx: number, ky: number): boolean {
+    const s = this.ship;
+    if (this.demo || !s.visible || (this.phase !== 'active' && this.phase !== 'intro') || s.boostT > 0 || s.invuln > 0) return false;
+    if (this.mission.aegisT > 0) {
+      s.invuln = 0.4;
+      this.sink.sfx('shield');
+      this.rings.push({ x: s.x, y: s.y, r: 6, maxR: 20, t: 0, dur: 0.35, color: PALETTE.cyan });
+      return true;
+    }
+    this.environmentHit(dmg, label, kx, ky);
+    return true;
+  }
+
+  /** Continuous damage with no knockback (ion burns). */
+  burnShip(amount: number): void {
+    if (this.demo || !this.ship.visible) return;
+    this.damage(amount, false);
+    this.hurtFlash = Math.max(this.hurtFlash, 0.3);
+  }
+
+  /** Energy gained from something other than a mote (crystal cells). */
+  gainEnergy(value: number, x: number, y: number): void {
+    if (this.demo) return;
+    this.energy += value;
+    this.score += 15 * value;
+    this.sink.sfx('energy', 2);
+    this.addText(x, y - 6, `+${value}`, PALETTE.violet);
+  }
+
+  spawnHazard(kind: HazardKind, size: 0 | 1 | 2, x: number, y: number, vx: number, vy: number, gravity: number): Hazard {
+    const h = makeHazard(kind, size, x, y, vx, vy, this.rng);
+    h.gravity = gravity;
+    this.hazards.push(h);
+    return h;
+  }
+
+  explodeAt(x: number, y: number, colors: string[], n: number): void {
+    this.particles.burst(x, y, this.reducedEffects ? Math.ceil(n / 2) : n, 15, 60 + n * 2, 0.8, colors, { flags: P_GLOW | P_SPARK, drag: 0.8 });
+  }
+
+  /** 0..1 depth inside a heat zone at a point, or -1 outside every one. */
+  heatDepthAt(x: number, y: number): number {
+    const L = this.level;
+    let best = -1;
+    const hr = this.heatRadiusNow;
+    const br = L.body.radius * this.bodyPulse;
+    const r = Math.hypot(x - this.bx, y - this.by);
+    if (hr > 0 && r < hr) best = clamp(1 - (r - br) / Math.max(1, hr - br), 0, 1);
+    for (let i = 0; i < L.companions.length; i++) {
+      const c = L.companions[i];
+      const m = this.attractors[i + 1];
+      if (c.heatRadius <= 0 || !m) continue;
+      const dc = Math.hypot(x - m.x, y - m.y);
+      if (dc < c.heatRadius) best = Math.max(best, clamp(1 - (dc - c.radius) / (c.heatRadius - c.radius), 0, 1));
+    }
+    return best;
+  }
+
+  /** Initialise a leapfrog body's cached gravity at its current position. */
+  gravityInto(b: { x: number; y: number; gx: number; gy: number }): void {
+    gravityAt(b.x, b.y, this.attractors, 1, this.tmp);
+    b.gx = this.tmp.x;
+    b.gy = this.tmp.y;
+  }
+
+  /** After a teleport the ship's cached gravity is stale. */
+  refreshGravity(): void {
+    this.gravityInto(this.ship);
+  }
+
+  /** Clear the sky of loose hazards (boss phase changes). */
+  clearHazards(): void {
+    for (const h of this.hazards) {
+      if (h.orbiting) continue;
+      if (this.onScreen(h.x, h.y, 10)) this.particles.burst(h.x, h.y, 6, 10, 40, 0.5, ['#3ef2ff', '#9b5cff', '#e8f0ff'], { flags: P_GLOW });
+      h.alive = false;
+    }
+    this.hazards = this.hazards.filter((h) => h.alive);
+    this.flares = [];
+    this.cometQueue = [];
+  }
+
+  /** Light up relativistic jets (the Devourer's last phase). */
+  enableJets(): void {
+    if (this.beam) return;
+    this.beam = { angle: this.rng.range(0, TAU), angularSpeed: 0.12 * this.rng.sign(), cycleT: 0, off: 2.6, charge: 1.1, on: 1.6, count: 2, length: 340, halfWidth: 6, hitCooldown: 0 };
+    this.sink.message('RELATIVISTIC JETS IGNITE', 'danger');
+  }
+
+  /** A handful of energy motes (rewards during survival lulls). */
+  scatterMotes(n: number): void {
+    for (let i = 0; i < n && this.motes.length < CONFIG.MAX_MOTES + 6; i++) this.spawnOrbitMote();
+  }
+
   // ------------------------------------------------------------------ effects
 
   addText(x: number, y: number, text: string, color: string): void {
@@ -2011,11 +2265,14 @@ export class Run {
   /** Recompute the ship's ballistic trajectory preview (called once per rendered frame). */
   updatePrediction(): void {
     const s = this.ship;
-    if (!s.visible) {
+    // NO FLIGHT PLAN: the run modifier that takes the preview away.
+    if (!s.visible || this.modifiers.has('blind')) {
       this.trajCount = 0;
+      if (!this.demo && this.mission) this.mission.checkPrediction(this.traj, 0, 1 / 40);
       return;
     }
     const attractors = this.attractors.map((a) => ({ ...a }));
+    const preview = (this.demo ? CONFIG.TRAJECTORY_TIME : this.level.mission.preview) * this.mods.trajectoryMul;
     const res = predictTrajectory(
       s.x,
       s.y,
@@ -2024,13 +2281,17 @@ export class Run {
       attractors,
       this.level.companions.length > 0 || this.level.body.orbit ? this.placeAt : null,
       this.simTime,
-      CONFIG.TRAJECTORY_TIME * this.mods.trajectoryMul,
+      Math.min(preview, 9.9),
       1 / 40,
       this.traj,
-      this.level.body.radius + 1,
+      this.level.body.radius * this.bodyPulse + 1,
+      this.companionRadii,
+      !this.demo && this.mission && this.mission.fields.length > 0 ? this.fieldAccel : null,
     );
     this.trajCount = res.count;
     this.trajCrashed = res.crashed;
+    // Let targets and gates light up when the predicted path threads them.
+    if (!this.demo && this.mission) this.mission.checkPrediction(this.traj, res.count, 1 / 40);
   }
 
   get upgradesSummary(): { id: UpgradeId; stacks: number }[] {

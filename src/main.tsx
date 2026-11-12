@@ -5,6 +5,7 @@ import '@fontsource/silkscreen/400.css';
 import '@fontsource/silkscreen/700.css';
 import '@fontsource/vt323/400.css';
 import './styles.css';
+import './missions.css';
 import { App } from './App';
 
 const root = document.getElementById('root');

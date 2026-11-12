@@ -6,6 +6,8 @@ import { useArrowNav, useKeys } from './hooks';
 
 interface Props {
   summary: RunSummary;
+  /** A single practice sector rather than a run. */
+  practice?: boolean;
   onRetry: () => void;
   onMenu: () => void;
   sfx: (n: SfxName) => void;
@@ -27,7 +29,7 @@ function useCountUp(target: number, ms: number): number {
   return v;
 }
 
-export function GameOver({ summary, onRetry, onMenu, sfx }: Props) {
+export function GameOver({ summary, practice = false, onRetry, onMenu, sfx }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [armed, setArmed] = useState(false);
   useArrowNav(ref, true);
@@ -48,11 +50,17 @@ export function GameOver({ summary, onRetry, onMenu, sfx }: Props) {
   );
 
   const anyRecord = summary.newBestScore || summary.newBestLevel || summary.newBestTime;
+  const ranks = summary.ranks.filter((r) => r !== '-');
+  const rankLine = ranks.length > 0 ? ranks.join(' ') : '—';
+  const cleared = practice && summary.missionsCompleted > 0;
   const rows: { k: string; v: string; badge?: string; amber?: boolean }[] = [
     { k: 'SECTOR REACHED', v: String(summary.level).padStart(2, '0'), badge: summary.newBestLevel ? 'BEST' : undefined },
+    { k: 'MISSIONS COMPLETED', v: String(summary.missionsCompleted) },
+    { k: 'MISSION RANKS', v: rankLine },
+    { k: 'BOSSES DEFEATED', v: summary.bossesDefeated.length > 0 ? summary.bossesDefeated.join(' · ') : '0', badge: summary.bossesDefeated.length > 0 ? 'NEW' : undefined },
+    { k: 'SHARDS FOUND', v: String(summary.shards) },
     { k: 'SURVIVAL TIME', v: formatTime(summary.time), badge: summary.newBestTime ? 'BEST' : undefined },
-    { k: 'ASTEROIDS AVOIDED', v: String(summary.avoided) },
-    { k: 'ASTEROIDS DESTROYED', v: String(summary.destroyed) },
+    { k: 'HAZARDS DESTROYED', v: String(summary.destroyed) },
     { k: 'NEAR MISSES', v: String(summary.nearMisses) },
     { k: 'ENERGY COLLECTED', v: String(summary.energy) },
     { k: 'OBJECTS CATALOGUED', v: summary.discoveries.length > 0 ? `+${summary.discoveries.length}` : '0', badge: summary.discoveries.length > 0 ? 'NEW' : undefined },
@@ -62,12 +70,12 @@ export function GameOver({ summary, onRetry, onMenu, sfx }: Props) {
   return (
     <div className="overlay dim">
       <div className="panel gameover" ref={ref} role="dialog" aria-label="Run terminated">
-        <h2>RUN TERMINATED</h2>
+        <h2>{cleared ? 'PRACTICE COMPLETE' : practice ? 'PRACTICE OVER' : 'RUN TERMINATED'}</h2>
         <div className="cause">{summary.cause}</div>
 
         <div className="score-big">
           <div>
-            <div className="label">SCORE</div>
+            <div className="label">SCORE{summary.scoreMultiplier !== 1 ? ` · MODIFIERS x${summary.scoreMultiplier.toFixed(2)}` : ''}</div>
             <div className="value">{padScore(score)}</div>
           </div>
           {anyRecord && <span className="record">NEW PERSONAL RECORD</span>}
@@ -97,6 +105,12 @@ export function GameOver({ summary, onRetry, onMenu, sfx }: Props) {
             {summary.milestones.join(' · ')}
           </div>
         )}
+        {summary.partsUnlocked.length > 0 && (
+          <div className="unlock-note">
+            <span className="label">SHIP PART UNLOCKED</span>
+            {summary.partsUnlocked.join(' · ')} can now be bought in the hangar.
+          </div>
+        )}
         {summary.unlocked.length > 0 && (
           <div className="unlock-note">
             <span className="label">NEW MODULE UNLOCKED</span>
@@ -110,7 +124,7 @@ export function GameOver({ summary, onRetry, onMenu, sfx }: Props) {
             onClick={onRetry}
             onMouseEnter={() => sfx('hover')}
           >
-            RETRY
+            {practice ? 'FLY AGAIN' : 'RETRY'}
           </button>
           <button
             className="btn outline nav"

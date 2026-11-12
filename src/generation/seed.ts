@@ -48,10 +48,20 @@ export function levelCode(catalogueVersion: number, index: number, seed: number)
   return `C${catalogueVersion}-${String(index).padStart(3, '0')}-${(seed >>> 0).toString(16).toUpperCase().padStart(8, '0')}`;
 }
 
-export function parseLevelCode(code: string): { catalogueVersion: number; index: number; seed: number } | null {
-  const m = /^C(\d+)-(\d+)-([0-9A-F]{8})$/i.exec(code.trim());
+export interface ParsedCode {
+  catalogueVersion: number;
+  index: number;
+  seed: number;
+  /** Mission suffix (e.g. AR2); absent for survival sectors. */
+  mission?: { code: string; tier: number };
+}
+
+export function parseLevelCode(code: string): ParsedCode | null {
+  const m = /^C(\d+)-(\d+)-([0-9A-F]{8})(?:-([A-Z]{2})(\d+))?$/i.exec(code.trim());
   if (!m) return null;
-  return { catalogueVersion: Number(m[1]), index: Number(m[2]), seed: parseInt(m[3], 16) >>> 0 };
+  const out: ParsedCode = { catalogueVersion: Number(m[1]), index: Number(m[2]), seed: parseInt(m[3], 16) >>> 0 };
+  if (m[4]) out.mission = { code: m[4].toUpperCase(), tier: Number(m[5]) };
+  return out;
 }
 
 /**

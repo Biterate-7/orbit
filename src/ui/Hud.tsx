@@ -35,6 +35,18 @@ export function Hud({ engine, touch, showHint, onPause }: Props) {
   const flags = useRef<HTMLDivElement>(null);
   const msg = useRef<HTMLDivElement>(null);
   const hint = useRef<HTMLDivElement>(null);
+  const objTitle = useRef<HTMLDivElement>(null);
+  const objDetail = useRef<HTMLDivElement>(null);
+  const objTimer = useRef<HTMLDivElement>(null);
+  const objBonus = useRef<HTMLUListElement>(null);
+  const boss = useRef<HTMLDivElement>(null);
+  const bossName = useRef<HTMLDivElement>(null);
+  const bossFill = useRef<HTMLElement>(null);
+  const bossStatus = useRef<HTMLDivElement>(null);
+  const alert = useRef<HTMLDivElement>(null);
+  const fuelMeter = useRef<HTMLDivElement>(null);
+  const fuelFill = useRef<HTMLElement>(null);
+  const fuelNum = useRef<HTMLSpanElement>(null);
   const [hintVisible] = useState(showHint);
 
   useEffect(() => {
@@ -99,6 +111,45 @@ export function Hud({ engine, touch, showHint, onPause }: Props) {
       if (hint.current && !hint.current.classList.contains('hide') && (h.time > 10 || h.level > 1)) {
         hint.current.classList.add('hide');
       }
+
+      // ---- mission objective
+      const o = h.objective;
+      if (changed('objT', o.title) && objTitle.current) objTitle.current.textContent = o.title;
+      if (changed('objD', o.detail) && objDetail.current) objDetail.current.textContent = o.detail;
+      const timer = o.timer >= 0 ? Math.ceil(o.timer) : -1;
+      if (changed('objTm', timer) && objTimer.current) {
+        objTimer.current.textContent = timer >= 0 ? `JUMP WINDOW ${formatTime(timer)}` : '';
+        objTimer.current.className = `obj-timer${timer >= 0 && timer <= 15 ? ' urgent' : ''}`;
+      }
+      const bonusKey = o.bonuses.map((b) => `${b.label}:${b.state}`).join('|');
+      if (changed('bonus', bonusKey) && objBonus.current) {
+        objBonus.current.innerHTML = o.bonuses
+          .map((b) => `<li class="${b.state === 1 ? 'done' : b.state === 2 ? 'fail' : ''}"><i></i>${b.label}</li>`)
+          .join('');
+      }
+      const bossKey = o.boss ? `${o.boss.name}|${o.boss.phase}|${Math.round(o.boss.hp * 100)}|${o.boss.status}` : '';
+      if (changed('boss', bossKey) && boss.current) {
+        boss.current.style.display = o.boss ? '' : 'none';
+        if (o.boss) {
+          if (bossName.current) bossName.current.textContent = o.boss.name;
+          if (bossFill.current) bossFill.current.style.width = `${Math.round(o.boss.hp * 100)}%`;
+          if (bossStatus.current) bossStatus.current.textContent = `PHASE ${o.boss.phase}/${o.boss.phases} · ${o.boss.status}`;
+          boss.current.dataset.phase = String(o.boss.phase);
+        }
+      }
+      if (changed('alert', o.alert) && alert.current) {
+        alert.current.textContent = o.alert;
+        alert.current.className = `hud-alert${o.alert ? ' show' : ''}${/INVERT|NO FUEL|SURGE|LOCK ON|DASH|BURN$/.test(o.alert) ? ' danger' : ''}`;
+      }
+      const fuelPct = o.fuelMax > 0 ? Math.round((o.fuel / o.fuelMax) * 100) : -1;
+      if (changed('fuel', fuelPct) && fuelMeter.current) {
+        fuelMeter.current.style.display = fuelPct >= 0 ? '' : 'none';
+        if (fuelPct >= 0) {
+          if (fuelFill.current) fuelFill.current.style.width = `${fuelPct}%`;
+          if (fuelNum.current) fuelNum.current.textContent = `${o.fuel.toFixed(1)}s`;
+          fuelMeter.current.className = `meter fuel${fuelPct <= 15 ? ' danger' : fuelPct <= 35 ? ' warn' : ''}`;
+        }
+      }
     });
   }, [engine]);
 
@@ -114,7 +165,23 @@ export function Hud({ engine, touch, showHint, onPause }: Props) {
         <div className="hud-progress" aria-hidden="true">
           <i ref={progress} />
         </div>
+        <div className="hud-obj" aria-live="polite">
+          <div className="obj-title" ref={objTitle} />
+          <div className="obj-detail" ref={objDetail} />
+          <div className="obj-timer" ref={objTimer} />
+          <ul className="obj-bonus" ref={objBonus} />
+        </div>
       </div>
+
+      <div className="hud-boss" ref={boss} style={{ display: 'none' }}>
+        <div className="name" ref={bossName} />
+        <div className="bar">
+          <i ref={bossFill} />
+        </div>
+        <div className="status" ref={bossStatus} />
+      </div>
+
+      <div className="hud-alert" ref={alert} role="status" />
 
       <div className="hud-corner hud-tr">
         <div className="hud-score" ref={score}>
@@ -130,6 +197,17 @@ export function Hud({ engine, touch, showHint, onPause }: Props) {
       </button>
 
       <div className="hud-corner hud-bl">
+        <div className="meter fuel" ref={fuelMeter} style={{ display: 'none' }}>
+          <div className="meter-head">
+            <span className="label">FUEL</span>
+            <span className="num" ref={fuelNum}>
+              0s
+            </span>
+          </div>
+          <div className="meter-bar">
+            <i ref={fuelFill} />
+          </div>
+        </div>
         <div className="meter hull" ref={hullMeter}>
           <div className="meter-head">
             <span className="label">HULL</span>

@@ -1,3 +1,7 @@
+import type { MissionDebrief, MissionKind, MissionSpec, ObjectiveHud, Rank } from './missions/types';
+
+export type { MissionDebrief, MissionKind, MissionSpec, ObjectiveHud, Rank };
+
 /** Rendering / physics family of a celestial body. */
 export type BodyKind = 'planet' | 'gasgiant' | 'star' | 'neutron' | 'blackhole' | 'smallbody';
 
@@ -25,7 +29,10 @@ export type UpgradeId =
   | 'temporal'
   | 'iontrail';
 
-export type PermanentId = 'thrusters' | 'hull' | 'collector' | 'shields' | 'reactor';
+export type PermanentId = 'thrusters' | 'hull' | 'collector' | 'shields' | 'reactor' | 'tanks' | 'tractor' | 'heatshield' | 'gyro' | 'phase';
+
+/** Optional difficulty modifiers chosen before a run. */
+export type RunModifierId = 'glass' | 'swarm' | 'blind' | 'dry' | 'calm';
 
 /** How a body's surface is shaded by the pixel renderer. */
 export type SurfaceStyle = 'rock' | 'bands' | 'ice' | 'lava' | 'ocean' | 'locked' | 'dark' | 'plasma' | 'lumpy';
@@ -268,9 +275,11 @@ export interface LevelDef {
   newMechanics: string[];
   theme: LevelTheme;
   background: BackgroundSpec;
+  /** What this sector is played for. */
+  mission: MissionSpec;
 }
 
-export type HazardKind = 'asteroid' | 'debris' | 'comet' | 'bomb' | 'ice' | 'star';
+export type HazardKind = 'asteroid' | 'debris' | 'comet' | 'bomb' | 'ice' | 'star' | 'bolt';
 
 export interface Hazard {
   id: number;
@@ -402,6 +411,7 @@ export interface HudState {
   hasTemporal: boolean;
   combo: number;
   message: HudMessage | null;
+  objective: ObjectiveHud;
 }
 
 export interface UpgradeOffer {
@@ -424,6 +434,12 @@ export interface LevelIntro {
   /** True the first time the player ever meets this object. */
   discovery: boolean;
   key: number;
+  missionKind: MissionKind;
+  missionTitle: string;
+  missionBrief: string;
+  boss: boolean;
+  /** True the first time this mission type is played in this run. */
+  newMission: boolean;
 }
 
 export interface RunSummary {
@@ -445,6 +461,14 @@ export interface RunSummary {
   discoveries: string[];
   /** Titles of milestones completed during this run. */
   milestones: string[];
+  missionsCompleted: number;
+  bossesDefeated: string[];
+  shards: number;
+  /** Rank of every sector completed, in order. */
+  ranks: Rank[];
+  /** Ship parts unlocked by this run. */
+  partsUnlocked: string[];
+  scoreMultiplier: number;
 }
 
 export type SfxName =
@@ -468,4 +492,10 @@ export type SfxName =
   | 'temporal'
   | 'explode'
   | 'critical'
-  | 'heat';
+  | 'heat'
+  | 'gate'
+  | 'warp'
+  | 'pickup'
+  | 'alarm'
+  | 'dock'
+  | 'bosshit';

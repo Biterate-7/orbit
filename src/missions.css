@@ -1,0 +1,516 @@
+/* Mission UI: objective HUD, boss bar, alerts, intro mission tag, debrief, mission log, modifiers. */
+
+/* ------------------------------------------------------------------ HUD objective */
+
+.hud-obj {
+  margin-top: 6px;
+  max-width: min(300px, 46vw);
+  padding: 4px 8px 5px 6px;
+  margin-left: -6px;
+  background: rgba(4, 5, 11, 0.55);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.hud-obj .obj-title {
+  font-size: 8px;
+  letter-spacing: 2px;
+  color: var(--text);
+  line-height: 1.4;
+}
+.hud-obj .obj-title:not(:empty)::before {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 6px;
+  vertical-align: 1px;
+  background: var(--cyan);
+}
+.hud-obj .obj-detail {
+  font-family: var(--term);
+  font-size: 18px;
+  line-height: 1;
+  color: var(--cyan);
+}
+.hud-obj .obj-timer {
+  font-size: 8px;
+  letter-spacing: 2px;
+  color: var(--muted);
+}
+.hud-obj .obj-timer.urgent {
+  color: var(--red);
+  animation: blink 0.5s steps(2) infinite;
+}
+.hud-obj .obj-bonus {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.hud-obj .obj-bonus li {
+  font-family: var(--term);
+  font-size: 15px;
+  line-height: 1;
+  color: var(--dim);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.hud-obj .obj-bonus li i {
+  width: 6px;
+  height: 6px;
+  border: 1px solid currentColor;
+  flex: none;
+}
+.hud-obj .obj-bonus li.done {
+  color: var(--green);
+}
+.hud-obj .obj-bonus li.done i {
+  background: var(--green);
+}
+.hud-obj .obj-bonus li.fail {
+  color: #6a3040;
+  text-decoration: line-through;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Boss health bar, top centre, split into its three phases. */
+.hud-boss {
+  position: absolute;
+  top: calc(12px + var(--safe-t));
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(420px, 46vw);
+  text-align: center;
+}
+.hud-boss .name {
+  font-size: 8px;
+  letter-spacing: 4px;
+  color: var(--red);
+}
+.hud-boss .bar {
+  margin-top: 5px;
+  height: 6px;
+  background: #2a0f18;
+  border: 1px solid #6a2030;
+  position: relative;
+}
+.hud-boss .bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--red);
+  transition: width 0.25s steps(5);
+}
+.hud-boss .bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent calc(33.3% - 1px),
+    #04050b calc(33.3% - 1px),
+    #04050b 33.3%,
+    transparent 33.3%,
+    transparent calc(66.6% - 1px),
+    #04050b calc(66.6% - 1px),
+    #04050b 66.6%,
+    transparent 66.6%
+  );
+}
+.hud-boss .status {
+  margin-top: 4px;
+  font-family: var(--term);
+  font-size: 16px;
+  color: var(--muted);
+}
+.hud-boss[data-phase='3'] .name {
+  animation: blink 0.8s steps(2) infinite;
+}
+
+/* Status line under the centre message (DOCKING 60%, CONTROLS INVERTED ...). */
+.hud-alert {
+  position: absolute;
+  top: calc(104px + var(--safe-t));
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--pixel);
+  font-size: 8px;
+  letter-spacing: 3px;
+  white-space: nowrap;
+  color: var(--cyan);
+  opacity: 0;
+}
+.hud-alert.show {
+  opacity: 1;
+}
+.hud-alert.danger {
+  color: var(--red);
+  animation: blink 0.4s steps(2) infinite;
+}
+
+.meter.fuel .meter-bar i {
+  background: var(--orange);
+}
+
+@media (max-width: 720px) {
+  .hud-obj .obj-detail {
+    font-size: 15px;
+  }
+  .hud-obj .obj-bonus {
+    display: none;
+  }
+  .hud-boss {
+    top: calc(44px + var(--safe-t));
+    width: 60vw;
+  }
+  .hud-alert {
+    top: calc(84px + var(--safe-t));
+  }
+}
+
+/* ------------------------------------------------------------------ intro card */
+
+.intro .boss-warn {
+  font-family: var(--pixel);
+  font-size: 8px;
+  letter-spacing: 4px;
+  color: var(--red);
+  margin-bottom: 12px;
+  animation: blink 0.5s steps(2) 6;
+}
+.intro .mission-tag {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.intro .mission-tag .mission-name {
+  font-family: var(--pixel);
+  font-size: 16px;
+  letter-spacing: 4px;
+  color: var(--mission, var(--cyan));
+}
+.intro .mission-tag .new-mission {
+  font-family: var(--pixel);
+  font-size: 8px;
+  letter-spacing: 2px;
+  color: #04050b;
+  background: var(--mission, var(--cyan));
+  padding: 3px 6px 2px;
+}
+.intro .line {
+  background: var(--mission, var(--cyan));
+}
+.intro .brief {
+  font-family: var(--pixel);
+  font-size: 8px;
+  letter-spacing: 2px;
+  line-height: 1.8;
+  max-width: 560px;
+  color: var(--text);
+  margin-bottom: 8px;
+  opacity: 0;
+  animation: fadeIn 0.3s steps(3) 0.7s forwards;
+}
+.intro.boss .name {
+  color: var(--red);
+  text-shadow: 3px 3px 0 #3a0a14;
+}
+.intro.boss .mission-tag .mission-name {
+  font-size: 24px;
+}
+
+/* ------------------------------------------------------------------ debrief */
+
+.debrief {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 12;
+  width: min(380px, calc(100% - 32px));
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 2px solid var(--mission, var(--cyan));
+  pointer-events: none;
+  font-family: var(--pixel);
+  animation:
+    debriefIn 0.25s steps(5),
+    debriefOut 4.2s steps(30) forwards;
+}
+.debrief.failed {
+  border-color: var(--red);
+}
+.debrief .head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.debrief .label {
+  font-size: 8px;
+  letter-spacing: 2px;
+  color: var(--muted);
+}
+.debrief .title {
+  font-size: 16px;
+  letter-spacing: 2px;
+  color: var(--mission, var(--cyan));
+  margin-top: 6px;
+}
+.debrief .fail-line {
+  margin-top: 8px;
+  font-size: 8px;
+  letter-spacing: 2px;
+  color: var(--red);
+}
+.rank {
+  font-family: var(--pixel);
+  font-size: 40px;
+  line-height: 1;
+  width: 58px;
+  height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid currentColor;
+  color: var(--dim);
+  flex: none;
+}
+.rank.rank-S {
+  color: var(--amber);
+  text-shadow: 2px 2px 0 #6a4a10;
+}
+.rank.rank-A {
+  color: var(--green);
+}
+.rank.rank-B {
+  color: var(--cyan);
+}
+.rank.rank-C {
+  color: var(--muted);
+}
+.debrief .rows {
+  margin-top: 12px;
+  display: grid;
+  gap: 4px;
+}
+.debrief .rows div {
+  display: flex;
+  justify-content: space-between;
+  font-size: 8px;
+  letter-spacing: 1px;
+}
+.debrief .rows .k {
+  color: var(--muted);
+}
+.debrief .rows .v.good {
+  color: var(--green);
+}
+.debrief .rows em {
+  font-style: normal;
+  color: var(--dim);
+  margin-left: 6px;
+}
+.debrief .bonuses {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+}
+.debrief .bonuses li {
+  font-family: var(--term);
+  font-size: 17px;
+  color: var(--dim);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.debrief .bonuses li i {
+  width: 7px;
+  height: 7px;
+  border: 1px solid currentColor;
+}
+.debrief .bonuses li.done {
+  color: var(--green);
+}
+.debrief .bonuses li.done i {
+  background: var(--green);
+}
+.debrief .score {
+  margin-top: 10px;
+  text-align: right;
+  font-size: 16px;
+  letter-spacing: 2px;
+  color: var(--amber);
+}
+@keyframes debriefIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -46%);
+  }
+}
+@keyframes debriefOut {
+  0%,
+  88% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ------------------------------------------------------------------ mission log, practice, modifiers */
+
+.panel.missions,
+.panel.modifiers {
+  width: min(820px, 100%);
+}
+.mission-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 8px 0 14px;
+  font-family: var(--pixel);
+  font-size: 8px;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+.mission-stats b {
+  color: var(--text);
+  font-weight: normal;
+}
+.mission-list {
+  display: grid;
+  gap: 6px;
+}
+.mission-row {
+  display: grid;
+  grid-template-columns: 44px 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 2px solid var(--line);
+  border-left-color: var(--mission, var(--line));
+  background: rgba(0, 0, 0, 0.25);
+}
+.mission-row .rank {
+  width: 40px;
+  height: 40px;
+  font-size: 24px;
+}
+.mission-row .name {
+  font-family: var(--pixel);
+  font-size: 8px;
+  letter-spacing: 2px;
+  color: var(--mission, var(--text));
+}
+.mission-row.boss .name::after {
+  content: ' · BOSS';
+  color: var(--red);
+}
+.mission-row .desc {
+  font-family: var(--term);
+  font-size: 17px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+.mission-row .done {
+  font-family: var(--pixel);
+  font-size: 8px;
+  color: var(--dim);
+}
+.mission-row.locked .name,
+.mission-row.locked .desc {
+  color: var(--dim);
+}
+.mission-row.locked {
+  border-left-color: var(--line);
+}
+
+.modifier-list {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 18px;
+}
+.modifier {
+  display: grid;
+  grid-template-columns: 20px 160px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.25);
+  border: 2px solid var(--line);
+  cursor: pointer;
+}
+.modifier:hover,
+.modifier:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+.modifier.on {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.04);
+}
+.modifier .check {
+  font-family: var(--pixel);
+  color: var(--accent);
+}
+.modifier .name {
+  font-family: var(--pixel);
+  font-size: 8px;
+  letter-spacing: 2px;
+  color: var(--accent);
+}
+.modifier .desc {
+  font-family: var(--term);
+  font-size: 18px;
+  color: var(--muted);
+}
+.modifier .mul {
+  font-family: var(--pixel);
+  font-size: 8px;
+  color: var(--amber);
+}
+.credits .value.up {
+  color: var(--green);
+}
+.credits .value.down {
+  color: var(--red);
+}
+.credits-chip.mods {
+  color: var(--violet);
+}
+.perm.locked {
+  opacity: 0.7;
+}
+.perm.locked .name {
+  color: var(--dim);
+}
+
+@media (max-width: 760px) {
+  .mission-row {
+    grid-template-columns: 40px 1fr auto;
+  }
+  .mission-row .done {
+    display: none;
+  }
+  .modifier {
+    grid-template-columns: 20px 1fr auto;
+  }
+  .modifier .desc {
+    grid-column: 2 / -1;
+  }
+}
