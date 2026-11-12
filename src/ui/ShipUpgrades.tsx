@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { SaveData, SaveStore } from '../game/persistence';
 import type { PermanentId, SfxName } from '../game/types';
-import { PERMANENTS, PERMANENT_COSTS, PERMANENT_MAX, UPGRADES, UPGRADE_ORDER } from '../game/upgrades';
+import { PERMANENTS, PERMANENT_COSTS, PERMANENT_MAX, UPGRADES, UPGRADE_ORDER, partUnlocked } from '../game/upgrades';
 import { useArrowNav, useKeys } from './hooks';
 import { PixelIcon } from './PixelIcon';
 
@@ -22,6 +22,8 @@ export function ShipUpgrades({ save, store, onBack, sfx }: Props) {
   const buy = (id: PermanentId) => {
     const lvl = save.permanent[id];
     if (lvl >= PERMANENT_MAX) return;
+    const def = PERMANENTS.find((x) => x.id === id);
+    if (def && !partUnlocked(def, { shards: save.records.shards, bosses: save.bosses })) return;
     const cost = PERMANENT_COSTS[lvl];
     if (save.credits < cost) return;
     store.update((d) => {
@@ -34,6 +36,7 @@ export function ShipUpgrades({ save, store, onBack, sfx }: Props) {
   };
 
   const unlocked = new Set(save.unlocked);
+  const progress = { shards: save.records.shards, bosses: save.bosses };
 
   return (
     <div className="overlay dim">
@@ -52,21 +55,22 @@ export function ShipUpgrades({ save, store, onBack, sfx }: Props) {
         <div className="perm-list">
           {PERMANENTS.map((p) => {
             const lvl = save.permanent[p.id];
+            const open = partUnlocked(p, progress);
             const maxed = lvl >= PERMANENT_MAX;
             const cost = maxed ? 0 : PERMANENT_COSTS[lvl];
-            const afford = !maxed && save.credits >= cost;
+            const afford = open && !maxed && save.credits >= cost;
             return (
               <div
                 key={p.id}
-                className={`perm${flash === p.id ? ' flash' : ''}`}
+                className={`perm${flash === p.id ? ' flash' : ''}${open ? '' : ' locked'}`}
                 style={{ '--accent': p.color } as CSSProperties}
               >
                 <div className="icon-wrap">
-                  <PixelIcon name={p.icon} color={p.color} size={27} />
+                  <PixelIcon name={open ? p.icon : 'lock'} color={open ? p.color : '#2c3a78'} size={27} />
                 </div>
                 <div>
                   <div className="name">{p.name}</div>
-                  <div className="desc">{p.description}</div>
+                  <div className="desc">{open ? p.description : `LOCKED · ${p.unlock?.hint}`}</div>
                   <div className="effect">
                     {p.effect(lvl)}
                     {!maxed && <span className="next">{'  >  '}{p.effect(lvl + 1)}</span>}
@@ -83,7 +87,7 @@ export function ShipUpgrades({ save, store, onBack, sfx }: Props) {
                   onClick={() => buy(p.id)}
                   onMouseEnter={() => afford && sfx('hover')}
                 >
-                  {maxed ? 'MAXED' : <span className="cost">{cost} CR</span>}
+                  {!open ? 'LOCKED' : maxed ? 'MAXED' : <span className="cost">{cost} CR</span>}
                 </button>
               </div>
             );

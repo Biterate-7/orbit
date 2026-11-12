@@ -7,6 +7,7 @@ import { getCatalogue } from '../../astronomy/database/catalogue';
 import { wrapAngle } from '../math';
 import type { HazardKind, LevelDef } from '../types';
 import { Backdrop, FogLayer, NebulaLayer, Starfield } from './background';
+import { MissionLayer } from './missionLayer';
 import { BodyRenderer, MoonRenderer } from './celestial';
 import { drawText } from './font';
 import { ctx2d, dottedRing, makeCanvas, makeGlow, pixelCircle } from './pixel';
@@ -29,7 +30,15 @@ export interface RenderOptions {
   reducedEffects: boolean;
 }
 
-const WARN_COLORS: Record<HazardKind, string> = { asteroid: '#ffc94d', debris: '#c9d3ea', comet: '#7ffcff', bomb: '#ff8a3d', ice: '#bff9ff', star: '#ffd890' };
+const WARN_COLORS: Record<HazardKind, string> = {
+  asteroid: '#ffc94d',
+  debris: '#c9d3ea',
+  comet: '#7ffcff',
+  bomb: '#ff8a3d',
+  ice: '#bff9ff',
+  star: '#ffd890',
+  bolt: '#ff4d5e',
+};
 const STAR_HAZARD_TINTS = ['#ffd890', '#b8c4ff', '#ffffff'];
 /** Direction of the host star in planetary levels (matches the body shading). */
 const SUN_DIR = { x: -0.74, y: -0.673 };
@@ -76,6 +85,7 @@ export class Renderer {
   private vignette: HTMLCanvasElement | null = null;
   private hurtVignette: HTMLCanvasElement | null = null;
   private pathBuf = { x: 0, y: 0 };
+  private missionLayer = new MissionLayer((r, c, i) => this.glow(r, c, i));
   opts: RenderOptions = { screenShake: true, reducedEffects: false };
 
   constructor(canvas: HTMLCanvasElement) {
@@ -307,6 +317,7 @@ export class Renderer {
 
     // ---- environment telegraphs (under hazards)
     if (!menu) this.drawEnvironment(run, pbx, pby, bsx, bsy);
+    if (!menu) this.missionLayer.drawUnder(ctx, run, toSx, toSy, this.time, z);
 
     // ---- energy motes
     for (const m of run.motes) {
@@ -331,6 +342,7 @@ export class Renderer {
 
     // ---- ship
     this.drawShip(run, toSx, toSy, menu);
+    if (!menu) this.missionLayer.drawOver(ctx, run, toSx, toSy, this.time, z);
 
     // ---- particles + shock rings
     run.particles.draw(ctx, cx, cy, z, ox, oy);
@@ -352,6 +364,7 @@ export class Renderer {
       this.fog.draw(ctx, this.vw, this.vh, holes, L.background.fogColor, dens, this.time);
       if (dark && !menu) this.drawRadar(run, toSx, toSy);
     }
+    if (!menu) this.missionLayer.drawAboveFog(ctx, run, toSx, toSy, this.time, this.vw, this.vh);
 
     // ---- floating texts
     for (const t of run.texts) {
@@ -393,6 +406,13 @@ export class Renderer {
       ctx.fillRect(0, 0, this.vw, this.vh);
       ctx.globalAlpha = 1;
     }
+    if (!menu && run.mission && run.mission.invertT > 0) {
+      // Ion surge: controls inverted - a magenta flicker you cannot miss.
+      ctx.globalAlpha = Math.floor(this.time * 14) % 2 ? 0.12 : 0.05;
+      ctx.fillStyle = '#ff7a9a';
+      ctx.fillRect(0, 0, this.vw, this.vh);
+      ctx.globalAlpha = 1;
+    }
     if (run.empT > 0 && !menu) {
       // Thrusters offline: a flickering cold wash.
       ctx.globalAlpha = Math.floor(this.time * 18) % 2 ? 0.1 : 0.04;
@@ -415,15 +435,15 @@ export class Renderer {
     const ctx = this.ctx;
     const L = run.level;
     const z = this.zoom;
-    const inner = L.body.radius * 1.4;
-    const outer = L.outerLimit + 40;
-    const span = outer - inner;
+    const rippleIn = L.body.radius * 1.4;
+    const rippleOut = Math.max(L.outerLimit, run.outerLimit) + 40;
+    const span = rippleOut - rippleIn;
     const rings = this.opts.reducedEffects ? 2 : 4;
     const speed = 10 + Math.sqrt(L.body.mu) / 120;
     ctx.fillStyle = L.theme.ripple;
     for (let i = 0; i < rings; i++) {
-      const r = outer - ((this.time * speed + (i * span) / rings) % span);
-      const k = (r - inner) / span;
+      const r = rippleOut - ((this.time * speed + (i * span) / rings) % span);
+      const k = (r - rippleIn) / span;
       ctx.globalAlpha = 0.07 + 0.16 * (1 - k) * bodyScale;
       dottedRing(ctx, bsx, bsy, r * z * bodyScale, 6 + k * 6, this.time * 0.05 + i);
     }
@@ -433,15 +453,18 @@ export class Renderer {
     // Safe orbital band.
     const s = run.ship;
     const r = Math.hypot(s.x, s.y);
-    const tooClose = s.visible && r < L.safeMin;
-    const tooFar = s.visible && r > L.safeMax;
+    const inner = run.innerLimit;
+    const outer = run.outerLimit;
+    const free = L.mission.orbitRule === 'free';
+    const tooClose = s.visible && r < inner;
+    const tooFar = s.visible && r > outer;
     const blink = Math.floor(this.time * 6) % 2 === 0;
     ctx.fillStyle = tooClose && blink ? PALETTE.red : '#ff4d5e';
     ctx.globalAlpha = tooClose ? 0.9 : 0.32;
-    dottedRing(ctx, bsx, bsy, L.safeMin * z * bodyScale, 4, -this.time * 0.08, 2);
+    dottedRing(ctx, bsx, bsy, inner * z * bodyScale, 4, -this.time * 0.08, 2);
     ctx.fillStyle = tooFar && blink ? PALETTE.amber : L.theme.accent;
-    ctx.globalAlpha = tooFar ? 0.9 : 0.26;
-    dottedRing(ctx, bsx, bsy, L.safeMax * z * bodyScale, 5, this.time * 0.06, 2);
+    ctx.globalAlpha = tooFar ? 0.9 : free ? 0.18 : 0.26;
+    dottedRing(ctx, bsx, bsy, outer * z * bodyScale, free ? 7 : 5, this.time * 0.06, free ? 1 : 2);
     ctx.globalAlpha = 1;
   }
 
@@ -478,7 +501,7 @@ export class Renderer {
         if (heatPx > 0) glows.push([heatPx * 1.2, '#ff4d5e', 0.45]);
         break;
     }
-    if (run.phase === 'active' && run.level.modifiers.includes('waves')) {
+    if (run.phase === 'active' && run.waveCharge > 0) {
       // Charging gravity wave: body brightens.
       const charging = run.waveCharge;
       if (charging > 0) glows.push([R * 2.8, '#e8f0ff', 1.2 * (1 - charging / 1.1)]);
@@ -748,7 +771,8 @@ export class Renderer {
     // Gravity waves.
     for (const w of run.waves) {
       const k = w.r / w.maxR;
-      ctx.fillStyle = '#e8f0ff';
+      // Pull waves (negative strength) are drawn violet.
+      ctx.fillStyle = w.strength < 0 ? '#b77dff' : '#e8f0ff';
       ctx.globalAlpha = 0.7 * (1 - k);
       pixelCircle(ctx, cx0, cy0, w.r * z);
       ctx.fillStyle = L.theme.ripple;
@@ -760,17 +784,18 @@ export class Renderer {
 
   private drawTrajectory(run: Run, toSx: (x: number) => number, toSy: (y: number) => number): void {
     const ctx = this.ctx;
-    const L = run.level;
     const n = run.trajCount;
+    const inner = run.innerLimit;
+    const outer = run.outerLimit;
     const ion = run.mods.ionTrail > 0;
     for (let i = 1; i < n; i += 2) {
       const x = run.traj[i * 2];
       const y = run.traj[i * 2 + 1];
       const r = Math.hypot(x, y);
-      const bad = r < L.safeMin || r > L.safeMax;
+      const bad = r < inner || r > outer;
       const k = i / n;
       ctx.globalAlpha = k < 0.35 ? 0.85 : k < 0.7 ? 0.55 : 0.3;
-      ctx.fillStyle = bad ? (r < L.safeMin ? PALETTE.red : PALETTE.amber) : ion ? '#7ffcff' : PALETTE.cyan;
+      ctx.fillStyle = bad ? (r < inner ? PALETTE.red : PALETTE.amber) : ion ? '#7ffcff' : PALETTE.cyan;
       ctx.fillRect(toSx(x), toSy(y), 1, 1);
     }
     if (run.trajCrashed && n > 0) {
@@ -866,6 +891,19 @@ export class Renderer {
         ctx.fillRect(sx - 1, sy, 3, 1);
         ctx.fillRect(sx, sy - 1, 1, 3);
         ctx.globalAlpha = 1;
+      } else if (h.kind === 'bolt') {
+        // Plasma bolt: a hot streak along its velocity.
+        const sp = Math.hypot(h.vx, h.vy) || 1;
+        const dx = h.vx / sp;
+        const dy = h.vy / sp;
+        ctx.globalCompositeOperation = 'lighter';
+        const g = this.glow(5, '#ff4d5e', 1.2);
+        ctx.drawImage(g, sx - (g.width >> 1), sy - (g.height >> 1));
+        ctx.globalCompositeOperation = 'source-over';
+        for (let i = 0; i < 6; i++) {
+          ctx.fillStyle = i === 0 ? '#ffffff' : i < 3 ? '#ffc94d' : '#ff4d5e';
+          ctx.fillRect(Math.round(sx - dx * i), Math.round(sy - dy * i), 1, 1);
+        }
       } else if (h.kind === 'debris') {
         const spr = this.debris[h.variant % this.debris.length][frameIndex(h.rot, DEBRIS_FRAMES)];
         ctx.drawImage(spr, sx - (spr.width >> 1), sy - (spr.height >> 1));

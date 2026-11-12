@@ -200,6 +200,9 @@ export class AudioManager {
       destroy: 0.04,
       nearmiss: 0.1,
       warning: 0.25,
+      alarm: 0.8,
+      bosshit: 0.2,
+      pickup: 0.06,
     };
     const gap = minGap[name] ?? 0.02;
     const prev = this.last.get(name) ?? -1;
@@ -287,6 +290,30 @@ export class AudioManager {
         break;
       case 'heat':
         this.noise(0.12, 'lowpass', 700, 300, 0.1);
+        break;
+      case 'gate':
+        this.tone('triangle', 880, 880, 0.06, 0.14);
+        this.tone('triangle', 1318.5, 1318.5, 0.12, 0.14, 0.06);
+        break;
+      case 'warp':
+        this.tone('sine', 220, 1760, 0.35, 0.22);
+        this.noise(0.4, 'bandpass', 4000, 300, 0.2, 0, 3);
+        break;
+      case 'pickup':
+        [1046.5, 1568, 2093].forEach((f, i) => this.tone('square', f, f, 0.05, 0.08, i * 0.04));
+        break;
+      case 'alarm':
+        for (let i = 0; i < 3; i++) this.tone('sawtooth', 520, 390, 0.16, 0.12, i * 0.2);
+        break;
+      case 'dock':
+        this.tone('square', 196, 196, 0.08, 0.16);
+        this.tone('triangle', 392, 784, 0.3, 0.16, 0.08);
+        this.noise(0.2, 'highpass', 1500, 5000, 0.1, 0.06);
+        break;
+      case 'bosshit':
+        this.noise(0.8, 'lowpass', 1800, 90, 0.6);
+        this.tone('square', 150, 45, 0.6, 0.25);
+        this.tone('triangle', 600, 150, 0.4, 0.12, 0.05);
         break;
     }
   }

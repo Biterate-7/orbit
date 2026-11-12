@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import { formatTime, padScore } from '../game/math';
 import type { SaveData } from '../game/persistence';
+import { RUN_MODIFIERS, scoreMultiplier } from '../game/modifiers';
 import type { SfxName } from '../game/types';
 import { useArrowNav } from './hooks';
 
@@ -8,6 +9,8 @@ interface Props {
   save: SaveData;
   onPlay: () => void;
   onUpgrades: () => void;
+  onMissions: () => void;
+  onModifiers: () => void;
   onCatalogue: () => void;
   /** Number of objects in the bundled astronomical catalogue. */
   catalogueSize: number;
@@ -16,10 +19,12 @@ interface Props {
   sfx: (n: SfxName) => void;
 }
 
-export function MainMenu({ save, onPlay, onUpgrades, onCatalogue, catalogueSize, onHowTo, onSettings, sfx }: Props) {
+export function MainMenu({ save, onPlay, onUpgrades, onMissions, onModifiers, onCatalogue, catalogueSize, onHowTo, onSettings, sfx }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   useArrowNav(ref, true);
   const r = save.records;
+  const mult = scoreMultiplier(save.runModifiers);
+  const mods = RUN_MODIFIERS.filter((m) => save.runModifiers.includes(m.id));
   const hover = () => sfx('hover');
   const click = (fn: () => void) => () => {
     sfx('click');
@@ -36,6 +41,15 @@ export function MainMenu({ save, onPlay, onUpgrades, onCatalogue, catalogueSize,
       <nav className="menu-list" aria-label="Main menu">
         <button className="btn primary nav" onClick={onPlay} onMouseEnter={hover}>
           PLAY
+          {mods.length > 0 && <span className="credits-chip mods">x{mult.toFixed(2)}</span>}
+        </button>
+        <button className="btn nav" onClick={click(onMissions)} onMouseEnter={hover}>
+          MISSIONS
+          {save.bosses.length > 0 && <span className="credits-chip log">{save.bosses.length}/3 BOSSES</span>}
+        </button>
+        <button className="btn nav" onClick={click(onModifiers)} onMouseEnter={hover}>
+          MODIFIERS
+          {mods.length > 0 && <span className="credits-chip mods">{mods.length} ON</span>}
         </button>
         <button className="btn nav" onClick={click(onUpgrades)} onMouseEnter={hover}>
           SHIP UPGRADES

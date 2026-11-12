@@ -127,6 +127,20 @@ export interface PermanentDef {
   effect: (level: number) => string;
   icon: string;
   color: string;
+  /** Advanced parts are earned before they can be bought: by shards found or by bosses beaten. */
+  unlock?: { kind: 'shards'; value: number; hint: string } | { kind: 'boss'; value: string; hint: string };
+}
+
+/** Lifetime achievements that unlock advanced ship parts. */
+export interface PartProgress {
+  shards: number;
+  bosses: readonly string[];
+}
+
+export function partUnlocked(p: PermanentDef, progress: PartProgress): boolean {
+  const u = p.unlock;
+  if (!u) return true;
+  return u.kind === 'shards' ? progress.shards >= u.value : progress.bosses.includes(u.value);
 }
 
 export const PERMANENT_COSTS = [25, 55, 95, 150, 230];
@@ -173,6 +187,51 @@ export const PERMANENTS: PermanentDef[] = [
     icon: 'reactor',
     color: PALETTE.amber,
   },
+  {
+    id: 'tanks',
+    name: 'FUEL TANKS',
+    description: 'More burn time on fuel-limited missions.',
+    effect: (l) => (l === 0 ? 'STANDARD TANKS' : `+${l * 15}% FUEL`),
+    icon: 'thrusters',
+    color: PALETTE.orange,
+    unlock: { kind: 'shards', value: 6, hint: 'FIND 6 SHARDS (LIFETIME)' },
+  },
+  {
+    id: 'tractor',
+    name: 'TRACTOR ARRAY',
+    description: 'Faster docking and node sync, longer pickup reach.',
+    effect: (l) => (l === 0 ? 'STANDARD CLAMPS' : `+${l * 20}% DOCKING SPEED · +${l * 3} REACH`),
+    icon: 'magnet',
+    color: PALETTE.violet,
+    unlock: { kind: 'shards', value: 15, hint: 'FIND 15 SHARDS (LIFETIME)' },
+  },
+  {
+    id: 'gyro',
+    name: 'GYRO DAMPERS',
+    description: 'Shrug off ion surges, magnetic bursts and fields.',
+    effect: (l) => (l === 0 ? 'NO DAMPING' : `-${l * 12}% DISRUPTION · -${l * 10}% FIELD PULL`),
+    icon: 'stabilizer',
+    color: PALETTE.cyan,
+    unlock: { kind: 'boss', value: 'boss_neutron', hint: 'DEFEAT THE NEUTRON CORE' },
+  },
+  {
+    id: 'phase',
+    name: 'PHASE COILS',
+    description: 'Boost phases through hazards for longer.',
+    effect: (l) => (l === 0 ? 'STOCK COILS' : `+${l * 12}% BOOST DURATION`),
+    icon: 'overdrive',
+    color: PALETTE.blue,
+    unlock: { kind: 'boss', value: 'boss_devourer', hint: 'DEFEAT THE DEVOURER' },
+  },
+  {
+    id: 'heatshield',
+    name: 'HEAT SHIELDING',
+    description: 'Less damage from coronas, flares and accretion disks.',
+    effect: (l) => (l === 0 ? 'BARE HULL' : `-${l * 12}% HEAT DAMAGE`),
+    icon: 'shield',
+    color: PALETTE.red,
+    unlock: { kind: 'boss', value: 'boss_sentinel', hint: 'DEFEAT THE SENTINEL' },
+  },
 ];
 
 export function shieldRechargeFor(level: number): number {
@@ -211,6 +270,14 @@ export interface RunMods {
   creditMul: number;
   shieldRecharge: number;
   trajectoryMul: number;
+  fuelMul: number;
+  tractorMul: number;
+  heatMul: number;
+  /** Multiplier on how long ion surges and magnetic bursts last. */
+  disruptMul: number;
+  /** Multiplier on how hard magnetic fields turn the ship. */
+  magneticMul: number;
+  boostTimeMul: number;
 }
 
 export function computeMods(stacks: Stacks, perm: Record<PermanentId, number>): RunMods {
@@ -219,7 +286,7 @@ export function computeMods(stacks: Stacks, perm: Record<PermanentId, number>): 
     lateralMul: 1 + 0.4 * stacks.thrusters,
     stabilizer: stacks.stabilizer,
     magnetRadius: stacks.magnet > 0 ? 28 + (stacks.magnet - 1) * 22 : 0,
-    pickupRadius: 10 + perm.collector * 4,
+    pickupRadius: 10 + perm.collector * 4 + (perm.tractor ?? 0) * 3,
     scanner: stacks.scanner,
     temporal: stacks.temporal,
     ionTrail: stacks.iontrail,
@@ -228,5 +295,11 @@ export function computeMods(stacks: Stacks, perm: Record<PermanentId, number>): 
     creditMul: 1 + 0.08 * perm.collector,
     shieldRecharge: shieldRechargeFor(perm.shields),
     trajectoryMul: 1 + 0.6 * stacks.iontrail,
+    fuelMul: 1 + 0.15 * (perm.tanks ?? 0),
+    tractorMul: 1 + 0.2 * (perm.tractor ?? 0),
+    heatMul: 1 - 0.12 * (perm.heatshield ?? 0),
+    disruptMul: 1 - 0.12 * (perm.gyro ?? 0),
+    magneticMul: 1 - 0.1 * (perm.gyro ?? 0),
+    boostTimeMul: 1 + 0.12 * (perm.phase ?? 0),
   };
 }

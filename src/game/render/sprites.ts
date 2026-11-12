@@ -116,6 +116,54 @@ export function buildShipSprites(): ShipSprites {
   return { frames, white, ghost, size };
 }
 
+const ENEMY_COLORS: Record<string, string> = {
+  R: '#ff4d5e',
+  D: '#5a1a2a',
+  O: '#ff8a3d',
+  Y: '#ffc94d',
+  G: '#8a96b8',
+  W: '#ffe0e0',
+};
+
+/** A hostile interceptor, facing +X. */
+const HUNTER_ART = ['DR.......', '.DRR.....', '..DGRR...', 'OODGWWRYY', '..DGRR...', '.DRR.....', 'DR.......'];
+
+/** The Sentinel: a heavier, broader war machine. */
+const SENTINEL_ART = [
+  '..DDR........',
+  '.DRRRR.......',
+  'DRRGGRRR.....',
+  '.DRGWWGRRR...',
+  'ODDRGWWWGRRY.',
+  'ODDRGWYWGRRYY',
+  'ODDRGWWWGRRY.',
+  '.DRGWWGRRR...',
+  'DRRGGRRR.....',
+  '.DRRRR.......',
+  '..DDR........',
+];
+
+export interface EnemySprites {
+  frames: HTMLCanvasElement[];
+  white: HTMLCanvasElement[];
+  hot: HTMLCanvasElement[];
+}
+
+export function buildEnemySprites(kind: 'hunter' | 'sentinel'): EnemySprites {
+  const map = parseArt(kind === 'hunter' ? HUNTER_ART : SENTINEL_ART, ENEMY_COLORS);
+  const size = kind === 'hunter' ? 13 : 19;
+  const frames: HTMLCanvasElement[] = [];
+  const white: HTMLCanvasElement[] = [];
+  const hot: HTMLCanvasElement[] = [];
+  for (let i = 0; i < SHIP_FRAMES; i++) {
+    const f = rotateMap(map, (i / SHIP_FRAMES) * TAU, size);
+    frames.push(f);
+    white.push(tint(f, '#ffffff'));
+    hot.push(tint(f, '#ffc94d'));
+  }
+  return { frames, white, hot };
+}
+
 export function frameIndex(angle: number, frames: number): number {
   const a = ((angle % TAU) + TAU) % TAU;
   return Math.round((a / TAU) * frames) % frames;

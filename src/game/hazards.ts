@@ -54,6 +54,13 @@ export function makeHazard(kind: HazardKind, size: 0 | 1 | 2, x: number, y: numb
       spin = 0;
       variants = 3;
       break;
+    case 'bolt':
+      // A plasma bolt fired by a hostile craft; it falls through the gravity well like anything else.
+      r = 2.4;
+      damage = 14;
+      spin = 0;
+      variants = 1;
+      break;
   }
   return {
     id: nextId++,

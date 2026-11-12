@@ -21,7 +21,10 @@ import { ENVIRONMENTS, environment, hostPools } from './environments';
 import type { EnvId, EnvironmentDef } from './environments';
 import { levelName, proceduralDesignation } from './naming';
 import { configureOrbit } from './orbitalConfiguration';
-import { hash32, levelCode, rendezvousPick, subRng } from './seed';
+import { hash32, levelCode, parseLevelCode, rendezvousPick, subRng } from './seed';
+import { MISSIONS, missionByCode, survivalTier } from '../game/missions/catalog';
+import { planMission } from './missionGenerator';
+import type { MissionPick } from './missionSchedule';
 
 export const MOD_LABEL: Record<ModifierKind, string> = {
   belt: 'ORBITING DEBRIS',
@@ -57,6 +60,19 @@ export const MECH_LABEL: Record<string, string> = {
   donor: 'ACCRETION STREAM',
   muWobble: 'UNSTABLE MASS',
   jets: 'RELATIVISTIC JETS',
+  fuel: 'LIMITED FUEL',
+  wormhole: 'WORMHOLES',
+  magfield: 'MAGNETIC FIELDS',
+  mines: 'PROXIMITY MINES',
+  aegis: 'AEGIS SHIELDS',
+  movinggates: 'MOVING GATES',
+  planets: 'MOVING PLANETS',
+  ionsurge: 'ION SURGES',
+  growth: 'GROWING HORIZON',
+  hunter: 'HOSTILE CRAFT',
+  dock: 'ORBITAL DOCKING',
+  waves2: 'PULL WAVES',
+  surge: 'GRAVITY SURGES',
 };
 
 export interface Encounter {
@@ -81,18 +97,27 @@ function depthTarget(index: number): number {
 }
 
 /** Weight of an environment at a given sector: early sectors favour nearby space, later ones mix everything. */
-export function environmentWeight(env: EnvironmentDef, index: number): number {
-  if (env.minLevel > index) return 0;
+export function environmentWeight(env: EnvironmentDef, index: number, ignoreMinLevel = false): number {
+  if (env.minLevel > index && !ignoreMinLevel) return 0;
   const gap = env.depth - depthTarget(index);
   const near = Math.exp(-(gap * gap) / 1.6) + 0.1;
   const flat = clamp((index - 22) / 10, 0, 1);
   return env.weight * (near + (1 - near) * flat);
 }
 
-export function rollEncounter(seed: number, index: number, catalogue: Catalogue = getCatalogue()): Encounter {
+/**
+ * Roll the environment and host for a sector. `allowed` restricts the environments to those a
+ * mission can take place in (a mission's own requirements outrank the usual depth gating).
+ */
+export function rollEncounter(seed: number, index: number, catalogue: Catalogue = getCatalogue(), allowed: readonly EnvId[] = []): Encounter {
   const rng = subRng(seed, 'encounter');
+  const constrained = allowed.length > 0;
+  const envPool = constrained ? ENVIRONMENTS.filter((e) => allowed.includes(e.id)) : ENVIRONMENTS;
   // Sector 1 is always a quiet rocky world: it is where the controls are learned.
-  const env = index <= 1 ? environment('rocky') : rng.weighted(ENVIRONMENTS, ENVIRONMENTS.map((e) => environmentWeight(e, index)));
+  const env =
+    index <= 1 && (!constrained || allowed.includes('rocky'))
+      ? environment('rocky')
+      : rng.weighted(envPool, envPool.map((e) => Math.max(constrained ? 1e-3 : 0, environmentWeight(e, index, constrained))));
   let pool = hostPools(catalogue).get(env.id) ?? [];
   // The journey starts at home: the opening sectors draw on the Solar System wherever it has a
   // suitable body (the Moon, Mars, Io, Saturn, the Sun ...) before heading out to other systems.
@@ -140,7 +165,17 @@ function collectMechanicKeys(modifiers: ModifierKind[], m: LevelMechanics, bp: E
   return [...new Set(keys)];
 }
 
-export function buildLevel(enc: Encounter, seen: ReadonlySet<string> = new Set(), catalogue: Catalogue = getCatalogue()): LevelDef {
+/** The mission a sector code without a mission suffix stands for. */
+export function defaultMission(index: number): MissionPick {
+  return { kind: 'survival', tier: survivalTier(index) };
+}
+
+export function buildLevel(
+  enc: Encounter,
+  seen: ReadonlySet<string> = new Set(),
+  catalogue: Catalogue = getCatalogue(),
+  pick: MissionPick = defaultMission(enc.index),
+): LevelDef {
   const { seed, index, object } = enc;
   const env = environment(enc.env);
   const rng = subRng(seed, 'build');
@@ -215,7 +250,7 @@ export function buildLevel(enc: Encounter, seen: ReadonlySet<string> = new Set()
   const mechanicKeys = collectMechanicKeys(modifiers, mechanics, bp);
   const { theme, background } = composeScene(bp, object, seed, catalogue);
 
-  return {
+  const base: Omit<LevelDef, 'mission'> = {
     index,
     seed,
     code: levelCode(catalogue.version, index, seed),
@@ -261,11 +296,44 @@ export function buildLevel(enc: Encounter, seen: ReadonlySet<string> = new Set()
     theme,
     background,
   };
+  return attachMission(base, pick, seen);
 }
 
-/** Rebuild a level from nothing but its seed and sector index. */
-export function generateLevelFromSeed(seed: number, index: number, seen: ReadonlySet<string> = new Set(), catalogue: Catalogue = getCatalogue()): LevelDef {
-  return buildLevel(rollEncounter(seed, index, catalogue), seen, catalogue);
+/** Lay the mission out over the environment and fold its mechanics into the level's identity. */
+function attachMission(base: Omit<LevelDef, 'mission'>, pick: MissionPick, seen: ReadonlySet<string>): LevelDef {
+  // A survival sector's tier is a function of its index alone, so codes without a suffix stay exact.
+  const tier = pick.kind === 'survival' ? survivalTier(base.index) : pick.tier;
+  const { mission, patch } = planMission(pick.kind, tier, base);
+  const level: LevelDef = { ...base, ...patch, mission };
+  let keys = base.mechanicKeys;
+  if (patch.mechanics && patch.mechanics.belts.length === 0) keys = keys.filter((k) => k !== 'belt' && k !== 'inclined');
+  if (patch.companions) keys = keys.filter((k) => k !== 'moon');
+  level.mechanicKeys = [...new Set([...keys, ...mission.features])];
+  level.newMechanics =
+    base.index > 1 ? level.mechanicKeys.filter((k) => !seen.has(k) && k !== 'belt').map((k) => MECH_LABEL[k] ?? k.toUpperCase()) : [];
+  if (pick.kind !== 'survival') level.code = `${base.code}-${MISSIONS[pick.kind].code}${mission.tier}`;
+  return level;
+}
+
+/** Rebuild a level from nothing but its seed and sector index (and mission, when not survival). */
+export function generateLevelFromSeed(
+  seed: number,
+  index: number,
+  seen: ReadonlySet<string> = new Set(),
+  catalogue: Catalogue = getCatalogue(),
+  pick: MissionPick = defaultMission(index),
+): LevelDef {
+  return buildLevel(rollEncounter(seed, index, catalogue, MISSIONS[pick.kind].envs), seen, catalogue, pick);
+}
+
+/** Rebuild any level from its sector code (e.g. C1-012-56115553-AR2). */
+export function levelFromCode(code: string, catalogue: Catalogue = getCatalogue()): LevelDef | null {
+  const parsed = parseLevelCode(code);
+  if (!parsed) return null;
+  const kind = parsed.mission ? missionByCode(parsed.mission.code) : 'survival';
+  if (!kind) return null;
+  const pick: MissionPick = kind === 'survival' ? defaultMission(parsed.index) : { kind, tier: parsed.mission?.tier ?? 1 };
+  return generateLevelFromSeed(parsed.seed, parsed.index, new Set(), catalogue, pick);
 }
 
 /**
@@ -273,5 +341,5 @@ export function generateLevelFromSeed(seed: number, index: number, seen: Readonl
  * same signature would feel like near-duplicates; the tests use it to measure variety.
  */
 export function levelSignature(l: LevelDef): string {
-  return [l.identity.environment, l.identity.objectId, l.identity.orbit, [...l.mechanicKeys].sort().join('+'), l.companions.length].join('|');
+  return [l.mission.kind, l.identity.environment, l.identity.objectId, l.identity.orbit, [...l.mechanicKeys].sort().join('+'), l.companions.length].join('|');
 }

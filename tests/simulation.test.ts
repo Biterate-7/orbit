@@ -10,6 +10,8 @@ import { ENVIRONMENTS } from '../src/generation/environments';
 import { generateLevelFromSeed } from '../src/generation/levelGenerator';
 import { candidateSeed } from '../src/generation/seed';
 import { autopilot, simulateLevel } from './harness';
+import { pilotFor } from './missionHarness';
+import type { PilotState } from './missionHarness';
 
 const quiet: RunSink = { sfx: () => undefined, message: () => undefined, levelIntro: () => undefined, upgradeReady: () => undefined, died: () => undefined };
 
@@ -201,15 +203,21 @@ describe('offline play', () => {
     const run = new Run({ demo: false, sink: quiet, seed: 31337, noSpawns: true });
     let sectors = 0;
     let last = run.levelIndex;
-    for (let i = 0; i < 200 / CONFIG.STEP && sectors < 4; i++) {
-      run.step(CONFIG.STEP, autopilot(run));
+    // Each sector is flown for its own mission (survival, gates, extraction ...).
+    let state: PilotState = { released: false, burning: false, done: false, plan: null };
+    let controls = autopilot(run);
+    for (let i = 0; i < 240 / CONFIG.STEP && sectors < 3; i++) {
+      if (i % 4 === 0) run.updatePrediction();
+      if (i % 12 === 0) controls = pilotFor(run, state);
+      run.step(CONFIG.STEP, controls);
       if (run.levelIndex !== last) {
         last = run.levelIndex;
         sectors++;
+        state = { released: false, burning: false, done: false, plan: null };
       }
       if (run.phase === 'dead') break;
     }
-    expect(sectors).toBeGreaterThanOrEqual(3);
+    expect(sectors).toBeGreaterThanOrEqual(2);
     expect(fetchSpy).not.toHaveBeenCalled();
   }, 120000);
 });

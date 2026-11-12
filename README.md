@@ -2,10 +2,12 @@
 
 **STAY IN ORBIT. SURVIVE THE UNIVERSE.**
 
-A retro pixel-art arcade survival game built on real orbital physics. Your ship is
-trapped orbiting a celestial body: shape your orbit with thrust, dodge what the
-environment throws at you, collect energy, and survive an endless journey outward
-through a procedurally generated universe built from real astronomical catalogues.
+A retro pixel-art space adventure built on real orbital physics. Your ship is caught in
+the gravity of a celestial body: shape your orbit with thrust and fly a different mission
+in every sector - thread gates, dock with a station, cross asteroid belts, slingshot past
+planets, climb out of a growing black hole, run a nebula, outrun a hunter - on an endless
+journey outward through a procedurally generated universe built from real astronomical
+catalogues. Every fifth sector is a major encounter.
 
 Every sector is a real object - a moon, an asteroid, an exoplanet, a pulsar, a galaxy -
 or a clearly labelled procedural stand-in, and each kind of place plays differently.
@@ -38,9 +40,78 @@ are generated or bundled, and the astronomical catalogue ships with the build. O
 | Mouse | Hold left = accelerate, right = decelerate, middle = boost |
 | Touch | On-screen BRAKE / ACCEL / BOOST buttons |
 
-Keep the dotted trajectory between the two rings. Leaving the safe band, falling
-inward, escaping, or entering heat zones drains **Orbit Stability**; at zero you lose
+The dotted line is your coasting trajectory. In orbit-holding missions keep it between the
+two rings; in travel missions only the inner ring (too close) and the arena edge matter.
+Leaving the safe zone or entering heat zones drains **Orbit Stability**; at zero you lose
 control. Touching a star, planet, moon or event horizon is fatal.
+
+## Missions
+
+Every sector is flown for a mission with its own logic, objective and win condition. The
+objective sits under the sector name in the HUD; an edge arrow points to it when it is off
+screen, and the trajectory preview lights a target green ("ON COURSE") when your coasting
+path reaches it. **PE / AP** markers show your periapsis and apoapsis on travel missions.
+
+| Mission | What you do | How it is won | Its own pressure |
+| --- | --- | --- | --- |
+| Survival | Hold the orbit band through 2-5 escalating waves; each wave switches on more of the sector's hazard systems, with short lulls between | Survive the last wave | Waves |
+| Precision Navigation | Thread 5-8 narrow radial gates in order by raising / lowering the orbit. The HUD reads the preview: `RAISE ORBIT +12`, `ON LINE` | All gates passed | Jump window; a missed gate costs a lap; posts damage |
+| Energy Extraction | Harvest an energy quota (rich crystal cells sit at the heat edge, in ring planes, at band edges), then rendezvous with the dock on its orbit | Tractor lock held until docked | Jump window; hazards |
+| Asteroid Run | Climb from an inner lane through belts of rock on Keplerian orbits. Each belt has a wide gap and a narrow shard-carrying gap; from tier 2 the belts counter-rotate | Reach the jump gate | Jump window; collisions |
+| Gravity Slingshot | Not enough fuel to burn straight out: fly past a moving planet (a real n-body flyby) to be flung to a beacon | Reach the beacon | Fuel (slow trickle refill) |
+| Event Horizon | A feeding black hole grows in mass and horizon; frame dragging decays the orbit. Burn (best at periapsis: the Oberth effect) and climb past the escape ring | Cross the escape ring | Growth, fuel, accretion heat |
+| Nebula Navigation | Follow buoy-marked corridors through ionised gas (contact burns the hull). A wide main corridor, or a narrow two-hop route with the shards | Reach the exit beacon | Ion surges that invert the controls |
+| Pursuit | A hostile craft with its own engines, physics and pursuit autopilot hunts you and fires gravity-bent bolts | Jump drive charges (2x faster beyond 165 units) - or lure it into the environment | The hunter |
+
+Failing a jump window does not end the run: the drive forces a jump that costs a quarter
+of the hull and earns no rank.
+
+### Environmental mechanics
+
+All of these act through the same integrator as everything else:
+
+- **Wormholes** carry the ship (and loose rock) between two mouths and preserve the *shape*
+  of its orbit: a circular orbit in is a circular orbit out.
+- **Gravity waves** push outward; the Neutron Core also fires **pull waves** that drag inward.
+- **Solar flares** open telegraphed damage wedges (and heat the Sentinel).
+- **Magnetic fields** rotate velocity (a = ω × v) without changing speed; the preview bends with them.
+- **Moving planets** on rails: real gravity, real assists, real crashes - the preview stops where it would hit one.
+- **Limited fuel** on selected missions (and on every mission with the DRY TANKS modifier).
+- **Aegis pickups**: 7 s of immunity to impacts *and heat*; repair, fuel and energy-cell pickups.
+- **Dynamic obstacles**: proximity mines that arm, chase and detonate; gates that drift in and out.
+
+### Major encounters
+
+Every fifth sector, rotating, then returning as MK II, MK III with faster attacks:
+
+| Boss | Phases and attacks | Weakness | Victory |
+| --- | --- | --- | --- |
+| **The Neutron Core** | Push waves → alternating push / pull waves → paired double waves; pulsar beams speed up; magnetic bursts | Its stabiliser nodes: match orbits with each node until the tractor lock synchronises it | Sync every node of all three phases |
+| **The Devourer** | Grows continuously; from phase 2 smooth gravity surges, from phase 3 relativistic jets | Destabiliser charges: pick one up on the outer orbit, carry it down to the photon ring, climb back out | Three charges delivered |
+| **The Sentinel** | Pursuit with aimed bolts → spread volleys and mines dropped in its wake → telegraphed dash attacks | Heat: armour shrugs off impacts, but it vents slowly, so luring it through the corona or a flare overheats a core. It grows warier of the heat each phase | Three cores overheated |
+
+## Progression and replayability
+
+- **A curriculum, then a mix.** Sectors 1-15 teach one thing at a time - survival, precision,
+  extraction, asteroid run, *Neutron Core*, slingshot, event horizon, nebula, survival,
+  *Devourer*, pursuit, then tier-2 remixes with moving gates, magnetic fields, mines, fuel and
+  wormholes, and *the Sentinel* at 15. After that every fifth sector is a boss and the rest
+  are drawn from all eight missions, never the same twice in a row, favouring the least recent.
+  Later tiers add mechanics and tighten timing rather than just adding speed.
+- **The mission picks the place.** Each mission lists the environments it suits (an event
+  horizon needs a black hole, a slingshot a lone body); the encounter selector chooses among those.
+- **Ranks.** Every sector ends with a debrief - S to C from completion, bonus objectives
+  (no hull damage, beat par, all shards, use a gravity assist, overcharge the quota, clean
+  gates, no ion burns, destroy the hunter ...) and time against par. Score is paid by rank.
+- **Shards.** Three per mission, placed off the safe line - in narrow belt gaps, beside gate
+  posts, at the heat edge, on the alternative nebula route.
+- **Ship parts** bought with credits, some earned first: fuel tanks (6 shards), tractor array
+  (15 shards), gyro dampers (beat the Neutron Core), phase coils (beat the Devourer), heat
+  shielding (beat the Sentinel).
+- **Run modifiers** (main menu): Glass Hull ×1.4, Swarm ×1.3, No Flight Plan ×1.5,
+  Dry Tanks ×1.25, Calm Skies ×0.6 - multiplied together into the run's score.
+- **Mission log and practice.** Best rank per mission type, and a practice run of any mission
+  already reached (half credits, no records).
 
 ## The universe
 
@@ -181,6 +252,22 @@ could operate near a black hole or inside a stellar corona - these are game envi
   colour only and is never stored or shown as data.
 - **Embedded stars in nebulae are generated**, since the catalogue describes the nebula,
   not an individual star inside it. The level text says so.
+- **Mission planets are lighter than they look** (4-5% of the primary's mass). Because
+  companions ride fixed rails, their pull on the inner system is not cancelled by the primary
+  being pulled too; heavier planets would drag the starting orbit around on their own.
+  Flybys still bend a path by tens of degrees, so gravity assists are genuine n-body physics.
+- **Wormholes** are fictional. They preserve the shape of an orbit (velocity rotated with the
+  position, scaled by √(r_in / r_out)) rather than raw momentum, which would make every
+  outward transit an escape trajectory.
+- **Tractor locks** hold a true circular orbit at the ship's radius while drifting it towards
+  the target: a plain spring towards a target on a higher orbit would push the ship backwards
+  and lower its orbit, opening the gap (the classic rendezvous paradox).
+- **A growing black hole grows adiabatically**: mass rises smoothly, so orbits shrink
+  reversibly. Gravity surges swell and ease on a smooth envelope for the same reason - an
+  abrupt drop in mass would fling every orbit outward.
+- **Corridors and belt gaps are sized from real flights**: the nebula's corridors are traced
+  by a simulated finite-thrust climb with the ship's own engine, and each asteroid belt's gap
+  is sized from how long that climb spends inside the belt and how fast the gap sweeps past.
 
 ## Progression
 
@@ -212,11 +299,17 @@ src/
     orbitalConfiguration.ts  circular / eccentric / inclined / binary / ...
     difficulty.ts       the difficulty axes
     naming.ts           level names from the level's own data
+    missionSchedule.ts  which mission each sector is flown for (curriculum, bosses, mix)
+    missionGenerator.ts seeded mission layouts: gates, belts, corridors, docks, boss numbers
     environments/       planetary, stellar, extreme definitions + object classification
   progression/          discovery log, milestones, unlocks
   game/                 framework-free simulation (no React)
     engine.ts           rAF loop, fixed-timestep accumulator, state machine, events
     run.ts              one run: ship, hazards, every environment mechanic, scoring
+    missions/           mission data model, catalogue, runtime (pickups, gates, clouds,
+                        wormholes, fields, mines, enemy craft, ranking) and one controller
+                        per mission type and boss
+    modifiers.ts        run modifiers and their score multipliers
     rails.ts            Keplerian rails for companions; periapsis cycle
     physics.ts          Newtonian point-mass gravity, leapfrog integrator
     orbital.ts          orbit elements, stability model, trajectory prediction
@@ -237,7 +330,20 @@ from the engine's frame callback.
 
 ## Testing
 
-`npm test` runs four suites:
+`npm test` runs five suites:
+
+- **missions** - the schedule (curriculum, a boss every fifth sector, no back-to-back
+  repeats, missions only in environments that suit them, codes that rebuild mission
+  sectors exactly), and **every mission type flown to completion** on several seeds by
+  autopilots that use only the ship's controls and what the HUD shows
+  (`tests/pilots.ts`, `tests/missionHarness.ts`): a gate threader that follows the
+  RAISE / LOWER hint, a phase-and-hold rendezvous pilot that lets the tractor lock take
+  over, a corridor follower, a burn planner that searches flybys through the moving
+  planets' gravity, and a staged asteroid-run pilot that times each belt gap with rock
+  collisions on. Plus the mechanics themselves: waves and lulls, fuel and refill, inverted
+  controls, wormhole orbit preservation, magnetic fields conserving speed, the preview
+  stopping at a planet, real gravity assists, a growing hole, mines, the hunter's orbital
+  foresight, forced jumps, ranks and run modifiers.
 
 - **astronomy** - catalogue integrity (unique ids, schema validation, no invented values,
   image attribution), unit conversion, deduplication, HTTP retry / rate limit / mirror

@@ -4,7 +4,7 @@ import type { EnginePhase } from './game/engine';
 import { generateLevelFromSeed } from './generation/levelGenerator';
 import { SaveStore } from './game/persistence';
 import type { Settings } from './game/persistence';
-import type { LevelIdentity, LevelIntro, RunSummary, SfxName, UpgradeId, UpgradeOffer } from './game/types';
+import type { LevelIdentity, LevelIntro, MissionDebrief, MissionKind, RunSummary, SfxName, UpgradeId, UpgradeOffer } from './game/types';
 import { getCatalogue } from './astronomy/database/catalogue';
 import { Catalogue } from './ui/Catalogue';
 import { DiscoveryToast } from './ui/DiscoveryToast';
@@ -14,13 +14,16 @@ import { Hud } from './ui/Hud';
 import { useTouchMode } from './ui/hooks';
 import { LevelIntroCard } from './ui/LevelIntro';
 import { MainMenu } from './ui/MainMenu';
+import { MissionDebriefCard } from './ui/MissionDebrief';
+import { Missions } from './ui/Missions';
+import { RunModifiers } from './ui/RunModifiers';
 import { PauseMenu } from './ui/PauseMenu';
 import { SettingsPanel } from './ui/SettingsPanel';
 import { ShipUpgrades } from './ui/ShipUpgrades';
 import { TouchControls } from './ui/TouchControls';
 import { UpgradePicker } from './ui/UpgradePicker';
 
-type MenuScreen = 'main' | 'upgrades' | 'catalogue' | 'howto' | 'settings';
+type MenuScreen = 'main' | 'upgrades' | 'catalogue' | 'howto' | 'settings' | 'missions' | 'modifiers';
 type PauseView = 'main' | 'settings' | 'howto';
 
 export function App() {
@@ -34,6 +37,8 @@ export function App() {
   const [offer, setOffer] = useState<UpgradeOffer[] | null>(null);
   const [summary, setSummary] = useState<RunSummary | null>(null);
   const [intro, setIntro] = useState<LevelIntro | null>(null);
+  const [debrief, setDebrief] = useState<MissionDebrief | null>(null);
+  const [practice, setPractice] = useState<MissionKind | null>(null);
   const [discovery, setDiscovery] = useState<{ identity: LevelIdentity; key: number } | null>(null);
   const [runId, setRunId] = useState(0);
   const touch = useTouchMode(save.settings.touchControls);
@@ -70,12 +75,17 @@ export function App() {
           if (e.phase === 'menu' || e.phase === 'gameover') {
             setIntro(null);
             setDiscovery(null);
+            setDebrief(null);
           }
           break;
         case 'offer':
           setOffer(e.options);
           break;
+        case 'debrief':
+          setDebrief(e.debrief);
+          break;
         case 'intro':
+          setDebrief(null);
           setIntro(e.intro);
           setDiscovery(e.intro.discovery ? { identity: e.intro.identity, key: e.intro.key } : null);
           break;
@@ -107,9 +117,24 @@ export function App() {
     if (!engine) return;
     setScreen('main');
     setSummary(null);
+    setPractice(null);
     setRunId((r) => r + 1);
     engine.startRun();
   }, [engine]);
+
+  const practise = useCallback(
+    (kind: MissionKind) => {
+      if (!engine) return;
+      setScreen('main');
+      setSummary(null);
+      setPractice(kind);
+      setRunId((r) => r + 1);
+      engine.playMission(kind);
+    },
+    [engine],
+  );
+
+  const retry = useCallback(() => (practice ? practise(practice) : play()), [practice, practise, play]);
 
   const toMenu = useCallback(() => {
     if (!engine) return;
@@ -132,6 +157,8 @@ export function App() {
           save={save}
           onPlay={play}
           onUpgrades={() => setScreen('upgrades')}
+          onMissions={() => setScreen('missions')}
+          onModifiers={() => setScreen('modifiers')}
           onCatalogue={() => setScreen('catalogue')}
           catalogueSize={getCatalogue().size}
           onHowTo={() => setScreen('howto')}
@@ -143,6 +170,8 @@ export function App() {
         <ShipUpgrades save={save} store={store} onBack={() => setScreen('main')} sfx={sfx} />
       )}
       {engine && phase === 'menu' && screen === 'catalogue' && <Catalogue save={save} onBack={() => setScreen('main')} sfx={sfx} />}
+      {engine && phase === 'menu' && screen === 'missions' && <Missions save={save} onPractice={practise} onBack={() => setScreen('main')} sfx={sfx} />}
+      {engine && phase === 'menu' && screen === 'modifiers' && <RunModifiers save={save} store={store} onBack={() => setScreen('main')} sfx={sfx} />}
       {engine && phase === 'menu' && screen === 'howto' && <HowToPlay onBack={() => setScreen('main')} sfx={sfx} />}
       {engine && phase === 'menu' && screen === 'settings' && (
         <SettingsPanel
@@ -156,6 +185,7 @@ export function App() {
 
       {engine && inRun && <Hud key={runId} engine={engine} touch={touch} showHint={showHint} onPause={() => engine.pause()} />}
       {engine && inRun && intro && <LevelIntroCard intro={intro} onDone={() => setIntro(null)} />}
+      {engine && inRun && !intro && debrief && <MissionDebriefCard debrief={debrief} onDone={() => setDebrief(null)} />}
       {engine && phase === 'playing' && !intro && discovery && (
         <DiscoveryToast identity={discovery.identity} toastKey={discovery.key} onDone={() => setDiscovery(null)} />
       )}
@@ -172,7 +202,7 @@ export function App() {
           scan={engine.currentLevel}
           muted={save.settings.muted}
           onResume={() => engine.resume()}
-          onRestart={play}
+          onRestart={retry}
           onSettings={() => setPauseView('settings')}
           onHowTo={() => setPauseView('howto')}
           onMenu={toMenu}
@@ -185,7 +215,7 @@ export function App() {
       )}
       {engine && phase === 'paused' && pauseView === 'howto' && <HowToPlay onBack={() => setPauseView('main')} sfx={sfx} />}
 
-      {engine && phase === 'gameover' && summary && <GameOver summary={summary} onRetry={play} onMenu={toMenu} sfx={sfx} />}
+      {engine && phase === 'gameover' && summary && <GameOver summary={summary} practice={practice !== null} onRetry={retry} onMenu={toMenu} sfx={sfx} />}
     </div>
   );
 }

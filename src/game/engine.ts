@@ -9,8 +9,25 @@ import type { RunSink } from './run';
 import type { Controls } from './player';
 import { progressFrom, recordVisit } from '../progression/discovery';
 import { newlyCompleted } from '../progression/milestones';
-import { UPGRADES, UPGRADE_ORDER } from './upgrades';
-import type { HudMessage, HudState, LevelDef, LevelIntro, MessageTone, RunSummary, SfxName, UpgradeId, UpgradeOffer } from './types';
+import { PERMANENTS, UPGRADES, UPGRADE_ORDER, partUnlocked } from './upgrades';
+import { betterRank } from './persistence';
+import { MISSIONS } from './missions/catalog';
+import { generateLevelFromSeed } from '../generation/levelGenerator';
+import { CURRICULUM } from './missions/catalog';
+import type {
+  HudMessage,
+  HudState,
+  LevelDef,
+  LevelIntro,
+  MessageTone,
+  MissionDebrief,
+  MissionKind,
+  ObjectiveHud,
+  RunSummary,
+  SfxName,
+  UpgradeId,
+  UpgradeOffer,
+} from './types';
 
 export type EnginePhase = 'menu' | 'playing' | 'paused' | 'upgrade' | 'gameover';
 
@@ -18,7 +35,22 @@ export type EngineEvent =
   | { type: 'phase'; phase: EnginePhase }
   | { type: 'offer'; options: UpgradeOffer[] }
   | { type: 'intro'; intro: LevelIntro }
+  | { type: 'debrief'; debrief: MissionDebrief }
   | { type: 'gameover'; summary: RunSummary };
+
+const EMPTY_OBJECTIVE: ObjectiveHud = {
+  title: '',
+  detail: '',
+  progress: 0,
+  timer: -1,
+  bonuses: [],
+  shards: 0,
+  shardsTotal: 0,
+  boss: null,
+  fuel: 0,
+  fuelMax: 0,
+  alert: '',
+};
 
 type Listener = (e: EngineEvent) => void;
 
@@ -53,6 +85,8 @@ export class Engine {
   private boostPrimed = false;
   /** Titles of milestones completed during the current run. */
   private runMilestones: string[] = [];
+  /** Ship parts unlocked during the current run. */
+  private runParts: string[] = [];
   readonly hud: HudState = {
     level: 1,
     levelName: '',
@@ -76,6 +110,7 @@ export class Engine {
     hasTemporal: false,
     combo: 0,
     message: null,
+    objective: EMPTY_OBJECTIVE,
   };
 
   constructor(container: HTMLElement, store: SaveStore) {
@@ -122,11 +157,12 @@ export class Engine {
     this.run.setPreferences(s.sensitivity, s.reducedEffects);
   }
 
-  startRun(level?: LevelDef): void {
+  startRun(level?: LevelDef, single = false): void {
     this.audio.unlock();
     const save = this.store.get();
     this.introKey++;
     this.runMilestones = [];
+    this.runParts = [];
     this.run = new Run({
       demo: false,
       sink: this.sink,
@@ -135,6 +171,8 @@ export class Engine {
       reducedEffects: save.settings.reducedEffects,
       progress: progressFrom(save.journey),
       level,
+      modifiers: save.runModifiers,
+      single,
     });
     this.resize();
     this.acc = 0;
@@ -214,6 +252,17 @@ export class Engine {
     this.startRun(level);
   }
 
+  /**
+   * Mission practice: one freshly seeded sector of a mission type the player has already met,
+   * at the sector where the curriculum first introduces it.
+   */
+  playMission(kind: MissionKind, tier = 1): void {
+    const first = CURRICULUM.indexOf(kind) + 1 || 16;
+    const index = tier > 1 ? Math.max(first, CURRICULUM.lastIndexOf(kind) + 1) : first;
+    const seed = (Math.random() * 0xffffffff) >>> 0;
+    this.startRun(generateLevelFromSeed(seed, index, new Set(), undefined, { kind, tier }), true);
+  }
+
   destroy(): void {
     this.destroyed = true;
     cancelAnimationFrame(this.raf);
@@ -273,7 +322,7 @@ export class Engine {
   private sink: RunSink = {
     sfx: (name, intensity) => this.audio.play(name, intensity),
     message: (text, tone) => this.message(text, tone),
-    levelIntro: (level: LevelDef, discovery: boolean) => {
+    levelIntro: (level: LevelDef, discovery: boolean, newMission: boolean) => {
       this.audio.setDrone(level.body.kind);
       // The visit is saved straight away, so the catalogue fills even if this sector ends the run.
       const now = new Date().toISOString();
@@ -282,7 +331,8 @@ export class Engine {
       });
       this.awardMilestones(Math.max(this.store.get().records.highestLevel, level.index));
       const rare = level.identity.rarity === 'rare' || level.identity.rarity === 'legendary';
-      if (rare) this.audio.play('upgrade');
+      if (level.mission.boss) this.audio.play('alarm');
+      else if (rare) this.audio.play('upgrade');
       this.emit({
         type: 'intro',
         intro: {
@@ -294,8 +344,17 @@ export class Engine {
           identity: level.identity,
           discovery,
           key: ++this.introKey,
+          missionKind: level.mission.kind,
+          missionTitle: level.mission.title,
+          missionBrief: level.mission.brief,
+          boss: level.mission.boss,
+          newMission,
         },
       });
+    },
+    missionComplete: (debrief: MissionDebrief) => {
+      this.recordMission(debrief);
+      this.emit({ type: 'debrief', debrief });
     },
     upgradeReady: () => {
       if (this.offerAt < 0) this.offerAt = this.realTime + 0.45;
@@ -304,6 +363,28 @@ export class Engine {
     },
     died: (cause: string) => this.finishRun(cause),
   };
+
+  /** Save a finished sector straight away: best ranks, shards and bosses survive a later death. */
+  private recordMission(d: MissionDebrief): void {
+    const before = this.store.get();
+    const progressBefore = { shards: before.records.shards, bosses: before.bosses };
+    this.store.update((s) => {
+      s.records.shards += d.shards;
+      if (d.success) {
+        s.records.missionsCompleted += 1;
+        const rec = s.missions[d.kind] ?? { completed: 0, best: '-' as const };
+        s.missions[d.kind] = { completed: rec.completed + 1, best: betterRank(rec.best, d.rank) };
+        if (d.boss && !s.bosses.includes(d.kind)) s.bosses.push(d.kind);
+      }
+    });
+    const after = this.store.get();
+    for (const p of PERMANENTS) {
+      if (!partUnlocked(p, progressBefore) && partUnlocked(p, { shards: after.records.shards, bosses: after.bosses })) {
+        this.runParts.push(p.name);
+        this.message(`SHIP PART UNLOCKED · ${p.name}`, 'upgrade');
+      }
+    }
+  }
 
   /** Pay out any milestone that has just been completed. Returns their titles. */
   private awardMilestones(highestLevel: number): string[] {
@@ -341,12 +422,18 @@ export class Engine {
     const save = this.store.get();
     const rec = save.records;
     const level = run.levelIndex;
-    const credits = Math.floor((run.energy + run.levelsCleared * 6 + Math.floor(run.score / 1500)) * run.mods.creditMul);
-    const newBestScore = run.score > rec.bestScore && run.score > 0;
-    const newBestLevel = level > rec.highestLevel;
-    const newBestTime = run.time > rec.bestTime;
+    // Practice sectors do not count towards records and pay half.
+    const practice = run.single;
+    const finalScore = Math.floor(run.score * run.scoreMul);
+    const shards = run.debriefs.reduce((s, d) => s + d.shards, 0);
+    const credits = Math.floor(
+      (run.energy + run.levelsCleared * 6 + Math.floor(finalScore / 1500) + shards * 4) * run.mods.creditMul * (practice ? 0.5 : 1),
+    );
+    const newBestScore = !practice && finalScore > rec.bestScore && finalScore > 0;
+    const newBestLevel = !practice && level > rec.highestLevel;
+    const newBestTime = !practice && run.time > rec.bestTime;
     const lifetimeEnergy = rec.lifetimeEnergy + run.energy;
-    const highest = Math.max(rec.highestLevel, level);
+    const highest = practice ? rec.highestLevel : Math.max(rec.highestLevel, level);
     const unlocked: UpgradeId[] = [];
     const have = new Set(save.unlocked);
     for (const id of UPGRADE_ORDER) {
@@ -356,9 +443,11 @@ export class Engine {
       if (ok) unlocked.push(id);
     }
     this.store.update((d) => {
-      d.records.bestScore = Math.max(d.records.bestScore, Math.floor(run.score));
+      if (!practice) {
+        d.records.bestScore = Math.max(d.records.bestScore, finalScore);
+        d.records.bestTime = Math.max(d.records.bestTime, run.time);
+      }
       d.records.highestLevel = highest;
-      d.records.bestTime = Math.max(d.records.bestTime, run.time);
       d.records.totalRuns += 1;
       d.records.lifetimeEnergy = lifetimeEnergy;
       d.records.lifetimeTime += run.time;
@@ -373,7 +462,7 @@ export class Engine {
       cause,
       level,
       time: run.time,
-      score: Math.floor(run.score),
+      score: finalScore,
       energy: run.energy,
       avoided: run.avoided,
       destroyed: run.destroyed,
@@ -386,9 +475,15 @@ export class Engine {
       upgrades: run.upgradesSummary,
       discoveries: run.visits.filter((v) => v.discovery).map((v) => v.identity.objectName),
       milestones: [...this.runMilestones],
+      missionsCompleted: run.debriefs.filter((d) => d.success).length,
+      bossesDefeated: run.bossesDefeated.map((k) => MISSIONS[k].title),
+      shards,
+      ranks: run.debriefs.map((d) => d.rank),
+      partsUnlocked: [...this.runParts],
+      scoreMultiplier: run.scoreMul,
     };
     this.audio.setThrust(0);
-    this.audio.play('gameover');
+    this.audio.play(practice && run.debriefs.some((d) => d.success) ? 'clear' : 'gameover');
     this.audio.setAmbienceLevel(0.6);
     this.setPhase('gameover');
     this.emit({ type: 'gameover', summary });
@@ -466,7 +561,8 @@ export class Engine {
     h.levelName = r.level.name;
     h.levelProgress = r.levelProgress;
     h.levelPhase = r.phase;
-    h.score = Math.floor(r.score);
+    h.score = Math.floor(r.score * r.scoreMul);
+    h.objective = r.demo ? EMPTY_OBJECTIVE : r.mission.hud();
     h.time = r.time;
     h.hull = Math.max(0, s.hull);
     h.hullMax = s.hullMax;

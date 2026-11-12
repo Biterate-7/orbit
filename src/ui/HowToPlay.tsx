@@ -125,10 +125,24 @@ export function HowToPlay({ onBack, sfx }: Props) {
           </div>
 
           <div>
-            <h3>SECTORS</h3>
+            <h3>MISSIONS</h3>
             <p>
-              Survive the countdown to clear a sector. Each one is a new environment: asteroid belts, red giants, neutron stars,
-              black holes, nebulae - then endless remixes.
+              Every sector is flown for a <b>mission</b> - survive waves, thread gates, dock with a station, cross asteroid belts,
+              slingshot past planets, climb out of a black hole, run a nebula, outrun a hunter. The objective sits under the sector
+              name; the <b style={{ color: 'var(--green)' }}>preview turns its target green</b> when you are on course.
+            </p>
+            <p>
+              <b>PE</b> / <b>AP</b> mark your periapsis and apoapsis: a burn changes the far side of the orbit, and counts most where
+              you move fastest.
+            </p>
+          </div>
+
+          <div>
+            <h3>BOSSES &amp; RANKS</h3>
+            <p>
+              Every fifth sector is a <b style={{ color: 'var(--red)' }}>major encounter</b> with three phases and a weakness to find.
+              Missions are ranked <b style={{ color: 'var(--amber)' }}>S</b>-C on time, damage and bonus objectives. <b>Shards</b> hidden
+              off the safe line unlock advanced ship parts.
             </p>
           </div>
         </div>

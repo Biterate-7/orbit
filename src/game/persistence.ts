@@ -1,8 +1,23 @@
 import { emptyLog, sanitizeLog } from '../progression/discovery';
 import type { DiscoveryLog } from '../progression/discovery';
 import { MILESTONES } from '../progression/milestones';
-import type { PermanentId, UpgradeId } from './types';
+import type { MissionKind, PermanentId, Rank, RunModifierId, UpgradeId } from './types';
 import { BASE_UNLOCKED, UPGRADE_ORDER } from './upgrades';
+import { MISSION_ORDER } from './missions/catalog';
+import { MODIFIER_IDS } from './modifiers';
+
+/** Lifetime record of one mission type. */
+export interface MissionRecord {
+  completed: number;
+  best: Rank;
+}
+
+const RANK_ORDER: Rank[] = ['-', 'C', 'B', 'A', 'S'];
+
+/** The better of two ranks. */
+export function betterRank(a: Rank, b: Rank): Rank {
+  return RANK_ORDER.indexOf(a) >= RANK_ORDER.indexOf(b) ? a : b;
+}
 
 export interface Settings {
   masterVolume: number;
@@ -25,6 +40,9 @@ export interface Records {
   lifetimeTime: number;
   asteroidsAvoided: number;
   asteroidsDestroyed: number;
+  /** Shards recovered over all runs (unlocks advanced ship parts). */
+  shards: number;
+  missionsCompleted: number;
 }
 
 export interface SaveData {
@@ -38,6 +56,12 @@ export interface SaveData {
   journey: DiscoveryLog;
   /** Ids of completed milestones. */
   milestones: string[];
+  /** Best rank and completions per mission type (only types that have been played). */
+  missions: Partial<Record<MissionKind, MissionRecord>>;
+  /** Major encounters ever defeated. */
+  bosses: MissionKind[];
+  /** Difficulty modifiers selected for the next run. */
+  runModifiers: RunModifierId[];
 }
 
 const KEY = 'orbitlost.save.v1';
@@ -66,13 +90,18 @@ export function defaultSave(): SaveData {
       lifetimeTime: 0,
       asteroidsAvoided: 0,
       asteroidsDestroyed: 0,
+      shards: 0,
+      missionsCompleted: 0,
     },
     credits: 0,
-    permanent: { thrusters: 0, hull: 0, collector: 0, shields: 0, reactor: 0 },
+    permanent: { thrusters: 0, hull: 0, collector: 0, shields: 0, reactor: 0, tanks: 0, tractor: 0, heatshield: 0, gyro: 0, phase: 0 },
     unlocked: [...BASE_UNLOCKED],
     settings: { ...DEFAULT_SETTINGS },
     journey: emptyLog(),
     milestones: [],
+    missions: {},
+    bosses: [],
+    runModifiers: [],
   };
 }
 
@@ -111,6 +140,15 @@ function sanitize(raw: unknown): SaveData {
   d.journey = sanitizeLog(r.journey);
   const known = new Set(MILESTONES.map((m) => m.id));
   d.milestones = Array.isArray(r.milestones) ? [...new Set(r.milestones.filter((m): m is string => typeof m === 'string' && known.has(m)))] : [];
+  // Mission records (absent in saves from before missions existed).
+  const missions = (r.missions ?? {}) as Record<string, Partial<MissionRecord> | null>;
+  for (const k of MISSION_ORDER) {
+    const m = missions && typeof missions === 'object' ? missions[k] : null;
+    if (!m || typeof m !== 'object') continue;
+    d.missions[k] = { completed: Math.floor(num(m.completed, 0, 0)), best: RANK_ORDER.includes(m.best as Rank) ? (m.best as Rank) : '-' };
+  }
+  d.bosses = Array.isArray(r.bosses) ? MISSION_ORDER.filter((k) => (r.bosses as unknown[]).includes(k)) : [];
+  d.runModifiers = Array.isArray(r.runModifiers) ? MODIFIER_IDS.filter((k) => (r.runModifiers as unknown[]).includes(k)) : [];
   return d;
 }
 
