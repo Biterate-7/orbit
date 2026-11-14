@@ -28,6 +28,28 @@ No backend, no accounts. **The game makes no network requests**: sprites, sound 
 are generated or bundled, and the astronomical catalogue ships with the build. Only
 `npm run ingest`, a developer tool, talks to the outside world.
 
+### Windows desktop build
+
+The same `dist/` build is packaged as a standalone Windows game with Electron and
+electron-builder. Players need nothing else installed.
+
+```bash
+npm run dist:win        # release/Lost-Orbit-Setup.exe (NSIS setup wizard, x64)
+npm run pack:win        # release/win-unpacked/Lost Orbit.exe, unpackaged, for quick checks
+npm run electron:start  # build, then run the game in Electron without packaging
+npm run icon            # regenerate build/icon.ico + build/icon.png from public/favicon.svg
+```
+
+- `electron/main.cjs` opens the game in a sandboxed window (no Node.js in the page) and serves
+  `dist/` from a private `app://lost-orbit/` origin with a strict Content-Security-Policy.
+  F11 or Alt+Enter toggles fullscreen.
+- `electron-builder.yml` holds the installer settings: per-user install by default (no admin
+  needed), folder choice, and Desktop and Start Menu shortcuts. `build/installer.nsh` adds the
+  Welcome page.
+- Desktop saves are stored in `%APPDATA%\Lost Orbit` and kept if the game is uninstalled.
+- The installer is not code-signed, so Windows SmartScreen shows "Windows protected your PC"
+  on first run (**More info → Run anyway**). Signing needs a code-signing certificate.
+
 ## Controls
 
 | Input | Action |

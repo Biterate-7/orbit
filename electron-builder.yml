@@ -1,0 +1,55 @@
+# electron-builder configuration for the Lost Orbit Windows installer.
+# Build with:  npm run dist:win   ->   release/Lost-Orbit-Setup.exe
+appId: com.lostorbit.game # also used in electron/main.cjs; don't change after release (Windows uses it to match upgrades)
+productName: Lost Orbit
+copyright: Copyright © 2026 Biterate-7
+
+directories:
+  output: release
+  buildResources: build
+
+# Package only the Vite production build and the Electron entry points. React, fonts etc. are
+# already bundled into dist/ by Vite, so no node_modules are shipped.
+files:
+  - dist/**/*
+  - electron/**/*
+  - package.json
+  - "!node_modules/**/*"
+asar: true
+npmRebuild: false
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+
+# Standard step-by-step setup wizard: Welcome -> install for me / all users -> folder -> install -> finish.
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Lost Orbit
+  uninstallDisplayName: Lost Orbit
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false # keep players' saves if they uninstall/reinstall
+  include: build/installer.nsh
+  artifactName: Lost-Orbit-Setup.${ext}
+
+# Electron fuses: switch off ways to run the packaged app as a general-purpose Node.js runtime.
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  onlyLoadAppFromAsar: true
+  grantFileProtocolExtraPrivileges: false
+
+publish: null
