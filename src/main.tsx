@@ -11,9 +11,12 @@ import { App } from './App';
 const root = document.getElementById('root');
 if (!root) throw new Error('Root element missing');
 
+// Set by electron/preload.cjs in the Windows desktop build, which has no Vercel deployment to report to.
+const isDesktopApp = 'lostOrbitDesktop' in window;
+
 createRoot(root).render(
   <StrictMode>
     <App />
-    <Analytics />
+    {!isDesktopApp && <Analytics />}
   </StrictMode>,
 );

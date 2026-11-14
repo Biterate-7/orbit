@@ -3,6 +3,9 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+  // Relative asset URLs so the same dist/ works on the web host and inside the packaged
+  // Windows app (Electron serves it from app://lost-orbit/, see electron/main.cjs).
+  base: './',
   server: { port: 5173, host: true },
   build: {
     target: 'es2020',
