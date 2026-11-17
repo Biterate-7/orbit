@@ -59,7 +59,10 @@ export function MissionDebriefCard({ debrief: d, onDone }: Props) {
           </li>
         ))}
       </ul>
-      <div className="score">+{d.score}</div>
+      <div className="score">
+        +{d.score}
+        <span className="cr">+{d.credits} CR</span>
+      </div>
     </div>
   );
 }

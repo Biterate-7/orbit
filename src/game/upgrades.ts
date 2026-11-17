@@ -1,5 +1,7 @@
 import type { PermanentId, UpgradeId } from './types';
 import { PALETTE } from './config';
+import { computeModuleMods } from './modules';
+import type { ModuleLoadout, ModuleMods } from './modules';
 
 export interface UpgradeDef {
   id: UpgradeId;
@@ -278,28 +280,34 @@ export interface RunMods {
   /** Multiplier on how hard magnetic fields turn the ship. */
   magneticMul: number;
   boostTimeMul: number;
+  /** Everything the fitted ship modules contribute (see modules.ts). */
+  m: ModuleMods;
 }
 
-export function computeMods(stacks: Stacks, perm: Record<PermanentId, number>): RunMods {
+export function computeMods(stacks: Stacks, perm: Record<PermanentId, number>, modules: ModuleLoadout | null = null): RunMods {
+  const m = computeModuleMods(modules);
+  const magnet = stacks.magnet > 0 ? 28 + (stacks.magnet - 1) * 22 : 0;
   return {
-    thrustMul: (1 + 0.05 * perm.thrusters) * (1 + 0.22 * stacks.thrusters) * (1 + 0.1 * stacks.iontrail),
-    lateralMul: 1 + 0.4 * stacks.thrusters,
+    m,
+    thrustMul: (1 + 0.05 * perm.thrusters) * (1 + 0.22 * stacks.thrusters) * (1 + 0.1 * stacks.iontrail) * m.thrustMul,
+    lateralMul: (1 + 0.4 * stacks.thrusters) * m.strafeMul,
     stabilizer: stacks.stabilizer,
-    magnetRadius: stacks.magnet > 0 ? 28 + (stacks.magnet - 1) * 22 : 0,
+    // The Quantum Collector and the in-run Magnetic Core reinforce each other.
+    magnetRadius: m.collectR > 0 && magnet > 0 ? Math.max(m.collectR, magnet) + 10 : Math.max(m.collectR, magnet),
     pickupRadius: 10 + perm.collector * 4 + (perm.tractor ?? 0) * 3,
     scanner: stacks.scanner,
     temporal: stacks.temporal,
     ionTrail: stacks.iontrail,
-    boostCdMul: 1 - 0.06 * perm.thrusters,
-    boostDvMul: 1 + 0.2 * stacks.iontrail,
+    boostCdMul: (1 - 0.06 * perm.thrusters) * (m.phaseLevel >= 2 ? 0.85 : 1),
+    boostDvMul: (1 + 0.2 * stacks.iontrail) * m.burstDvMul,
     creditMul: 1 + 0.08 * perm.collector,
     shieldRecharge: shieldRechargeFor(perm.shields),
-    trajectoryMul: 1 + 0.6 * stacks.iontrail,
+    trajectoryMul: (1 + 0.6 * stacks.iontrail) * m.previewMul,
     fuelMul: 1 + 0.15 * (perm.tanks ?? 0),
-    tractorMul: 1 + 0.2 * (perm.tractor ?? 0),
+    tractorMul: (1 + 0.2 * (perm.tractor ?? 0)) * m.lockMul,
     heatMul: 1 - 0.12 * (perm.heatshield ?? 0),
     disruptMul: 1 - 0.12 * (perm.gyro ?? 0),
     magneticMul: 1 - 0.1 * (perm.gyro ?? 0),
-    boostTimeMul: 1 + 0.12 * (perm.phase ?? 0),
+    boostTimeMul: (1 + 0.12 * (perm.phase ?? 0)) * m.phaseTimeMul,
   };
 }

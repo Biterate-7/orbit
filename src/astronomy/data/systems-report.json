@@ -1,0 +1,95 @@
+{
+  "generatedAt": "2026-11-16T11:36:27.994Z",
+  "ok": true,
+  "note": "1955 planet rows in 5 requests -> 916 systems",
+  "total": 916,
+  "added": 0,
+  "updated": 916,
+  "planets": 1897,
+  "byKind": {
+    "single": 482,
+    "binary": 383,
+    "multiple": 51
+  },
+  "circumbinary": 43,
+  "circumstellar": 391,
+  "showcase": [
+    {
+      "host": "TRAPPIST-1",
+      "present": true
+    },
+    {
+      "host": "Kepler-16",
+      "present": true
+    },
+    {
+      "host": "Proxima Cen",
+      "present": true
+    },
+    {
+      "host": "Kepler-90",
+      "present": false
+    },
+    {
+      "host": "Kepler-47",
+      "present": true
+    },
+    {
+      "host": "TOI-700",
+      "present": true
+    },
+    {
+      "host": "55 Cnc",
+      "present": true
+    },
+    {
+      "host": "Kepler-11",
+      "present": true
+    },
+    {
+      "host": "HD 10180",
+      "present": true
+    },
+    {
+      "host": "tau Cet",
+      "present": true
+    },
+    {
+      "host": "eps Eri",
+      "present": true
+    },
+    {
+      "host": "Kepler-444",
+      "present": true
+    },
+    {
+      "host": "TOI-178",
+      "present": true
+    },
+    {
+      "host": "HR 8799",
+      "present": true
+    },
+    {
+      "host": "Kepler-34",
+      "present": true
+    },
+    {
+      "host": "Kepler-35",
+      "present": true
+    },
+    {
+      "host": "Kepler-1647",
+      "present": true
+    },
+    {
+      "host": "TOI-1338 A",
+      "present": true
+    }
+  ],
+  "rejected": [],
+  "http": {
+    "requests": 0,
+    "cacheHits": 5
+  }
+}

@@ -15,7 +15,8 @@ import type { LevelDef } from '../src/game/types';
 import { generateLevelFromSeed } from '../src/generation/levelGenerator';
 import { gravityAt } from '../src/game/physics';
 import { placeAttractors } from '../src/game/rails';
-import { CURRICULUM } from '../src/game/missions/catalog';
+import { MISSIONS } from '../src/game/missions/catalog';
+import type { AnomalyMission, FlareRunMission } from '../src/game/missions/controllersExtra';
 import { anchorAt, gatePilot, holdOrbit, phaseAndHold, shootFor } from './pilots';
 
 export interface MissionResult {
@@ -38,6 +39,8 @@ export interface PilotState {
   plan?: { start: number; burn: number; miss: number } | null;
   planned?: number;
   stage?: number;
+  /** Index of the target the pilot has committed to (mining: one rock at a time). */
+  target?: number;
   climbing?: boolean;
   circularising?: boolean;
 }
@@ -229,16 +232,44 @@ export function planBurn(run: Run, target: { x: number; y: number }, fuel: numbe
   return best;
 }
 
-/** First curriculum sector of a mission type (where it is introduced). */
+/**
+ * Sector a mission is test-flown at. The original eight (and the bosses) keep the sectors their
+ * pilots were tuned at; the newer missions use the earliest sector the director can schedule them.
+ */
+const FIRST: Partial<Record<MissionKind, number>> = { survival: 1, precision: 2, extraction: 3, asteroid_run: 4, boss_neutron: 5, slingshot: 6, event_horizon: 7, nebula: 8, boss_devourer: 10, pursuit: 11, boss_sentinel: 15 };
+const SECOND: Partial<Record<MissionKind, number>> = { survival: 9, precision: 12, extraction: 13, asteroid_run: 14 };
+
 export function sectorFor(kind: MissionKind, tier: number): number {
-  const first = CURRICULUM.indexOf(kind) + 1;
-  if (tier <= 1) return first;
-  const last = CURRICULUM.lastIndexOf(kind) + 1;
-  return last > first ? last : 16 + (tier - 2) * 15;
+  if (tier <= 1) return FIRST[kind] ?? Math.max(4, MISSIONS[kind].minSector);
+  return SECOND[kind] ?? 16 + (tier - 2) * 15;
 }
 
 export function missionLevel(kind: MissionKind, tier: number, seed: number, index = sectorFor(kind, tier)): LevelDef {
   return generateLevelFromSeed(seed, index, new Set(), undefined, { kind, tier });
+}
+
+const COAST: Controls = { accel: false, brake: false, lateral: 0, boost: false };
+
+/**
+ * A two-burn transfer to the circular orbit of radius R, spending as little fuel as possible:
+ * raise (or lower) the far side at one apsis, coast round, then circularise at the other.
+ */
+function transferTo(run: Run, R: number): Controls {
+  const s = run.ship;
+  const info = orbitInfo(s.x, s.y, s.vx, s.vy, run.attractors[0].mu);
+  if (info.escaping) return { accel: false, brake: true, lateral: 0, boost: false };
+  const tol = 2.5;
+  const up = R > (info.peri + info.apo) / 2;
+  if (up) {
+    if (info.apo < R - tol) return { accel: true, brake: false, lateral: 0, boost: false };
+    // Coast to apoapsis, then lift the periapsis.
+    if (info.peri < R - tol && info.r > info.apo - 3) return { accel: true, brake: false, lateral: 0, boost: false };
+    if (info.apo > R + tol + 3 && info.r < info.peri + 3) return { accel: false, brake: true, lateral: 0, boost: false };
+    return COAST;
+  }
+  if (info.peri > R + tol) return { accel: false, brake: true, lateral: 0, boost: false };
+  if (info.apo > R + tol && info.r < info.peri + 3) return { accel: false, brake: true, lateral: 0, boost: false };
+  return COAST;
 }
 
 function dockPilot(run: Run, tg: TargetRt): Controls {
@@ -336,6 +367,63 @@ export function pilotFor(run: Run, phase: PilotState): Controls {
     case 'boss_sentinel': {
       const heat = run.level.body.heatRadius;
       return shapeOrbit(run, heat - 5, run.level.safeMax - 20);
+    }
+    case 'binary_nav': {
+      // Around two moving stars the preview swings too much to chase: sit on each gate's own orbit instead.
+      const g = m.gates[m.nextGate];
+      return holdOrbit(run, g ? g.baseR : run.level.startRadius);
+    }
+    case 'flare_run': {
+      // Match the two clocks on the HUD: choose the lane on which the shadow arrives as the flare fires.
+      // (The shield world is lower and faster; a higher lane lets its shadow catch up sooner.)
+      const f = m as FlareRunMission;
+      const p = run.attractors[1];
+      const c = run.level.companions[0];
+      const pr = Math.hypot(p.x, p.y);
+      const lo = pr + 17;
+      const hi = run.level.safeMax - 12;
+      if (f.inShadow(s.x, s.y) && f.timer < 2.5) return holdOrbit(run, lo);
+      const behind = (((Math.atan2(s.y, s.x) - f.shadowAngle()) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+      const want = (2 * Math.PI) / c.period - behind / Math.max(0.5, f.timer);
+      const R = want > 0.05 ? Math.cbrt(run.level.orbitMu / (want * want)) : hi;
+      return holdOrbit(run, Math.max(lo, Math.min(hi, R)));
+    }
+    case 'wormhole': {
+      // Every mouth and the beacon sit on a circular orbit: get onto it (frugally - fuel is short)
+      // and the orbit carries you in.
+      const next = m.pointer();
+      return next ? transferTo(run, Math.hypot(next.x, next.y)) : COAST;
+    }
+    case 'anomaly': {
+      const a = m as AnomalyMission;
+      return holdOrbit(run, run.level.mission.params.nodes[Math.min(a.lane, run.level.mission.params.nodes.length - 1)]);
+    }
+    case 'escort':
+    case 'discovery':
+      return dockPilot(run, m.targets[0]);
+    case 'mining': {
+      // Commit to one rock at a time - the one on the orbit closest to the ship's own - and stay with it until it is cut.
+      const r = Math.hypot(s.x, s.y);
+      if (phase.target === undefined || m.targets[phase.target].done) {
+        const open = m.targets.map((t, i) => ({ t, i })).filter((x) => !x.t.done);
+        if (open.length === 0) return holdOrbit(run, run.level.startRadius);
+        phase.target = open.reduce((a, b) => (Math.abs(a.t.anchor.r - r) < Math.abs(b.t.anchor.r - r) ? a : b)).i;
+      }
+      return dockPilot(run, m.targets[phase.target]);
+    }
+    case 'survey': {
+      // One world at a time, innermost first: hold a lane just inside its orbit (or the nearest edge
+      // of the band if it lies outside). A lower lane is a faster one, so the pass comes by itself.
+      const open = m.targets.filter((t) => !t.done).sort((a, b) => Math.hypot(a.x, a.y) - Math.hypot(b.x, b.y));
+      if (open.length === 0) return holdOrbit(run, run.level.startRadius);
+      const L = run.level;
+      const c = L.companions[open[0].companion ?? 0];
+      const pr = c ? c.orbitRadius : Math.hypot(open[0].x, open[0].y);
+      // Well clear of the world itself: its gravity is real.
+      let lane = pr - (c ? c.radius + 24 : 26);
+      // No room below it inside the band: fly above instead.
+      if (lane < L.safeMin + 12) lane = pr + (c ? c.radius + 24 : 26);
+      return holdOrbit(run, Math.max(L.safeMin + 12, Math.min(L.safeMax - 16, lane)));
     }
   }
   return holdOrbit(run, run.level.startRadius);

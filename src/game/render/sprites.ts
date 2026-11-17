@@ -32,7 +32,7 @@ function parseArt(art: string[], colors: Record<string, string>): PixelMap {
 }
 
 /** Supersampled nearest-neighbour rotation; keeps pixel-art edges crisp at any angle. */
-function rotateMap(src: PixelMap, angle: number, outSize: number): HTMLCanvasElement {
+export function rotateMap(src: PixelMap, angle: number, outSize: number): HTMLCanvasElement {
   const h = src.length;
   const w = src[0].length;
   const scx = (w - 1) / 2;

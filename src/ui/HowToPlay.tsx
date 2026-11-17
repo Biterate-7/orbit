@@ -119,17 +119,19 @@ export function HowToPlay({ onBack, sfx }: Props) {
             <h3>ENERGY &amp; UPGRADES</h3>
             <p>
               Collect <b style={{ color: 'var(--cyan)' }}>energy</b> orbiting the body. Milestones pause the run and offer three
-              modules - pick one. After a run, energy becomes <b style={{ color: 'var(--amber)' }}>credits</b> for permanent ship
-              upgrades.
+              modules - pick one. Missions, discoveries and achievements pay <b style={{ color: 'var(--amber)' }}>credits</b>: spend them on
+              ship parts, <b>modules</b> (some pairs form synergies) and cosmetics in the shop.
             </p>
           </div>
 
           <div>
             <h3>MISSIONS</h3>
             <p>
-              Every sector is flown for a <b>mission</b> - survive waves, thread gates, dock with a station, cross asteroid belts,
-              slingshot past planets, climb out of a black hole, run a nebula, outrun a hunter. The objective sits under the sector
-              name; the <b style={{ color: 'var(--green)' }}>preview turns its target green</b> when you are on course.
+              Every sector is flown for one of sixteen <b>missions</b>, drawn at random - no two runs go the same way. Thread gates
+              around two stars, hide in a planet's shadow from superflares, chain wormholes, mine ore, escort a tender, survey a real
+              star system, trace an unlisted signal, and more. Some sectors carry <b>twists</b> or come as rare variants. The
+              objective sits under the sector name; the <b style={{ color: 'var(--green)' }}>preview turns its target green</b> when
+              you are on course.
             </p>
             <p>
               <b>PE</b> / <b>AP</b> mark your periapsis and apoapsis: a burn changes the far side of the orbit, and counts most where
@@ -140,7 +142,8 @@ export function HowToPlay({ onBack, sfx }: Props) {
           <div>
             <h3>BOSSES &amp; RANKS</h3>
             <p>
-              Every fifth sector is a <b style={{ color: 'var(--red)' }}>major encounter</b> with three phases and a weakness to find.
+              Every few sectors - never on a fixed beat - comes a <b style={{ color: 'var(--red)' }}>major encounter</b> with three
+              phases and a weakness to find.
               Missions are ranked <b style={{ color: 'var(--amber)' }}>S</b>-C on time, damage and bonus objectives. <b>Shards</b> hidden
               off the safe line unlock advanced ship parts.
             </p>

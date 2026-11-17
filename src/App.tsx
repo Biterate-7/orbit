@@ -5,10 +5,13 @@ import { generateLevelFromSeed } from './generation/levelGenerator';
 import { SaveStore } from './game/persistence';
 import type { Settings } from './game/persistence';
 import type { LevelIdentity, LevelIntro, MissionDebrief, MissionKind, RunSummary, SfxName, UpgradeId, UpgradeOffer } from './game/types';
-import { getCatalogue } from './astronomy/database/catalogue';
+import { getAstroService } from './astronomy/systems/live';
+import { getSystems } from './astronomy/systems/store';
+import type { StarSystem } from './astronomy/systems/types';
 import { Catalogue } from './ui/Catalogue';
 import { DiscoveryToast } from './ui/DiscoveryToast';
 import { GameOver } from './ui/GameOver';
+import { Hangar } from './ui/Hangar';
 import { HowToPlay } from './ui/HowToPlay';
 import { Hud } from './ui/Hud';
 import { useTouchMode } from './ui/hooks';
@@ -16,20 +19,33 @@ import { LevelIntroCard } from './ui/LevelIntro';
 import { MainMenu } from './ui/MainMenu';
 import { MissionDebriefCard } from './ui/MissionDebrief';
 import { Missions } from './ui/Missions';
+import { Profile } from './ui/Profile';
+import { RewardToasts, toastsFor } from './ui/RewardToasts';
+import type { Toast } from './ui/RewardToasts';
 import { RunModifiers } from './ui/RunModifiers';
 import { PauseMenu } from './ui/PauseMenu';
 import { SettingsPanel } from './ui/SettingsPanel';
 import { ShipUpgrades } from './ui/ShipUpgrades';
+import { CASE_REVEAL_MS, Shop } from './ui/Shop';
 import { TouchControls } from './ui/TouchControls';
 import { UpgradePicker } from './ui/UpgradePicker';
 
-type MenuScreen = 'main' | 'upgrades' | 'catalogue' | 'howto' | 'settings' | 'missions' | 'modifiers';
+type MenuScreen = 'main' | 'upgrades' | 'catalogue' | 'howto' | 'settings' | 'missions' | 'modifiers' | 'hangar' | 'shop' | 'profile';
 type PauseView = 'main' | 'settings' | 'howto';
+/** What "retry" should start again: an ordinary run, a mission practice, or a flight to a chosen system. */
+type Replay = { kind: 'run' } | { kind: 'mission'; mission: MissionKind } | { kind: 'system'; system: StarSystem };
 
 export function App() {
   const stageRef = useRef<HTMLDivElement>(null);
   const store = useMemo(() => new SaveStore(), []);
   const save = useSyncExternalStore(store.subscribe, store.get);
+  // Cached live imports are loaded into the system catalogue up front (no network), so that runs
+  // can draw on them from the first sector.
+  const systems = useMemo(() => {
+    const cat = getSystems();
+    getAstroService(cat);
+    return cat;
+  }, []);
   const [engine, setEngine] = useState<Engine | null>(null);
   const [phase, setPhase] = useState<EnginePhase>('menu');
   const [screen, setScreen] = useState<MenuScreen>('main');
@@ -38,8 +54,9 @@ export function App() {
   const [summary, setSummary] = useState<RunSummary | null>(null);
   const [intro, setIntro] = useState<LevelIntro | null>(null);
   const [debrief, setDebrief] = useState<MissionDebrief | null>(null);
-  const [practice, setPractice] = useState<MissionKind | null>(null);
+  const [replay, setReplay] = useState<Replay>({ kind: 'run' });
   const [discovery, setDiscovery] = useState<{ identity: LevelIdentity; key: number } | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
   const [runId, setRunId] = useState(0);
   const touch = useTouchMode(save.settings.touchControls);
 
@@ -92,14 +109,28 @@ export function App() {
         case 'gameover':
           setSummary(e.summary);
           break;
+        case 'reward':
+          break; // shown through the progression listener below, which also covers menu purchases
       }
     });
+    // Anything lasting that any event earns - in a run or in a menu - becomes a toast.
+    const offRewards = eng.progress.onOutcome((out, event) => {
+      const fresh = toastsFor(out);
+      if (fresh.length === 0) return;
+      const show = (): void => setToasts((t) => [...t, ...fresh].slice(-8));
+      // A case's own reveal comes first; what it unlocked is announced once the reel has stopped.
+      if (event.type === 'open_case') window.setTimeout(show, CASE_REVEAL_MS + 400);
+      else show();
+    });
+    // A save carried over from an earlier version may already have earned things that did not exist then.
+    eng.settle();
     // Browsers only allow audio after a user gesture.
     const unlock = () => eng.audio.unlock();
     window.addEventListener('pointerdown', unlock);
     window.addEventListener('keydown', unlock);
     return () => {
       off();
+      offRewards();
       window.removeEventListener('pointerdown', unlock);
       window.removeEventListener('keydown', unlock);
       eng.destroy();
@@ -111,30 +142,45 @@ export function App() {
     engine?.applySettings(save.settings);
   }, [engine, save.settings]);
 
+  // Whatever is fitted in the hangar is what flies - including on the menu's own ship.
+  useEffect(() => {
+    engine?.applyLook(save.inventory.equipped);
+  }, [engine, save.inventory.equipped]);
+
   const sfx = useCallback((n: SfxName) => engine?.sfx(n), [engine]);
+
+  const begin = useCallback((next: Replay) => {
+    setScreen('main');
+    setSummary(null);
+    setReplay(next);
+    setRunId((r) => r + 1);
+  }, []);
 
   const play = useCallback(() => {
     if (!engine) return;
-    setScreen('main');
-    setSummary(null);
-    setPractice(null);
-    setRunId((r) => r + 1);
+    begin({ kind: 'run' });
     engine.startRun();
-  }, [engine]);
+  }, [engine, begin]);
 
   const practise = useCallback(
     (kind: MissionKind) => {
       if (!engine) return;
-      setScreen('main');
-      setSummary(null);
-      setPractice(kind);
-      setRunId((r) => r + 1);
+      begin({ kind: 'mission', mission: kind });
       engine.playMission(kind);
     },
-    [engine],
+    [engine, begin],
   );
 
-  const retry = useCallback(() => (practice ? practise(practice) : play()), [practice, practise, play]);
+  const fly = useCallback(
+    (system: StarSystem) => {
+      if (!engine) return;
+      begin({ kind: 'system', system });
+      if (!engine.playSystem(system)) setScreen('catalogue');
+    },
+    [engine, begin],
+  );
+
+  const retry = useCallback(() => (replay.kind === 'mission' ? practise(replay.mission) : replay.kind === 'system' ? fly(replay.system) : play()), [replay, practise, fly, play]);
 
   const toMenu = useCallback(() => {
     if (!engine) return;
@@ -143,16 +189,18 @@ export function App() {
   }, [engine]);
 
   const updateSettings = useCallback((patch: Partial<Settings>) => store.updateSettings(patch), [store]);
+  const home = useCallback(() => setScreen('main'), []);
 
   const inRun = phase === 'playing' || phase === 'paused' || phase === 'upgrade';
   const showHint = save.records.totalRuns < 3;
+  const menu = engine && phase === 'menu';
 
   return (
     <div className="app">
       <div className="stage" ref={stageRef} />
       {!save.settings.reducedEffects && <div className="scanlines" />}
 
-      {engine && phase === 'menu' && screen === 'main' && (
+      {menu && screen === 'main' && (
         <MainMenu
           save={save}
           onPlay={play}
@@ -160,28 +208,24 @@ export function App() {
           onMissions={() => setScreen('missions')}
           onModifiers={() => setScreen('modifiers')}
           onCatalogue={() => setScreen('catalogue')}
-          catalogueSize={getCatalogue().size}
+          onHangar={() => setScreen('hangar')}
+          onShop={() => setScreen('shop')}
+          onProfile={() => setScreen('profile')}
+          systemCount={systems.size}
           onHowTo={() => setScreen('howto')}
           onSettings={() => setScreen('settings')}
           sfx={sfx}
         />
       )}
-      {engine && phase === 'menu' && screen === 'upgrades' && (
-        <ShipUpgrades save={save} store={store} onBack={() => setScreen('main')} sfx={sfx} />
-      )}
-      {engine && phase === 'menu' && screen === 'catalogue' && <Catalogue save={save} onBack={() => setScreen('main')} sfx={sfx} />}
-      {engine && phase === 'menu' && screen === 'missions' && <Missions save={save} onPractice={practise} onBack={() => setScreen('main')} sfx={sfx} />}
-      {engine && phase === 'menu' && screen === 'modifiers' && <RunModifiers save={save} store={store} onBack={() => setScreen('main')} sfx={sfx} />}
-      {engine && phase === 'menu' && screen === 'howto' && <HowToPlay onBack={() => setScreen('main')} sfx={sfx} />}
-      {engine && phase === 'menu' && screen === 'settings' && (
-        <SettingsPanel
-          settings={save.settings}
-          onChange={updateSettings}
-          onBack={() => setScreen('main')}
-          onReset={() => store.reset()}
-          sfx={sfx}
-        />
-      )}
+      {menu && screen === 'upgrades' && <ShipUpgrades save={save} progress={engine.progress} onBack={home} sfx={sfx} />}
+      {menu && screen === 'hangar' && <Hangar save={save} progress={engine.progress} onBack={home} onShop={() => setScreen('shop')} sfx={sfx} />}
+      {menu && screen === 'shop' && <Shop save={save} progress={engine.progress} onBack={home} onHangar={() => setScreen('hangar')} sfx={sfx} />}
+      {menu && screen === 'profile' && <Profile save={save} progress={engine.progress} onBack={home} sfx={sfx} />}
+      {menu && screen === 'catalogue' && <Catalogue save={save} progress={engine.progress} onFly={fly} onBack={home} sfx={sfx} />}
+      {menu && screen === 'missions' && <Missions save={save} onPractice={practise} onBack={home} sfx={sfx} />}
+      {menu && screen === 'modifiers' && <RunModifiers save={save} store={store} onBack={home} sfx={sfx} />}
+      {menu && screen === 'howto' && <HowToPlay onBack={home} sfx={sfx} />}
+      {menu && screen === 'settings' && <SettingsPanel settings={save.settings} onChange={updateSettings} onBack={home} onReset={() => store.reset()} sfx={sfx} />}
 
       {engine && inRun && <Hud key={runId} engine={engine} touch={touch} showHint={showHint} onPause={() => engine.pause()} />}
       {engine && inRun && intro && <LevelIntroCard intro={intro} onDone={() => setIntro(null)} />}
@@ -215,7 +259,9 @@ export function App() {
       )}
       {engine && phase === 'paused' && pauseView === 'howto' && <HowToPlay onBack={() => setPauseView('main')} sfx={sfx} />}
 
-      {engine && phase === 'gameover' && summary && <GameOver summary={summary} practice={practice !== null} onRetry={retry} onMenu={toMenu} sfx={sfx} />}
+      {engine && phase === 'gameover' && summary && <GameOver summary={summary} practice={replay.kind !== 'run'} onRetry={retry} onMenu={toMenu} sfx={sfx} />}
+
+      <RewardToasts toasts={toasts} onDone={(id) => setToasts((t) => t.filter((x) => x.id !== id))} />
     </div>
   );
 }

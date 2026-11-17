@@ -1,6 +1,6 @@
 import { useRef } from 'react';
 import type { CSSProperties } from 'react';
-import { CURRICULUM, MISSION_ORDER, MISSIONS } from '../game/missions/catalog';
+import { MISSION_ORDER, MISSIONS } from '../game/missions/catalog';
 import type { SaveData } from '../game/persistence';
 import type { MissionKind, SfxName } from '../game/types';
 import { useArrowNav, useKeys } from './hooks';
@@ -53,8 +53,9 @@ export function Missions({ save, onPractice, onBack, sfx }: Props) {
         <div className="mission-list">
           {MISSION_ORDER.map((kind) => {
             const info = MISSIONS[kind];
-            const first = CURRICULUM.indexOf(kind) + 1;
-            const open = reached >= first;
+            const first = info.minSector;
+            // A mission can be practised once it has been met in a run, or the run has gone deep enough for it.
+            const open = !!save.missions[kind] || (save.stats.missionPlays[kind] ?? 0) > 0 || reached >= first;
             const rec = save.missions[kind];
             return (
               <div key={kind} className={`mission-row${open ? '' : ' locked'}${info.boss ? ' boss' : ''}`} style={{ '--mission': info.color } as CSSProperties}>

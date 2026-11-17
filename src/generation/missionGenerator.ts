@@ -11,7 +11,7 @@
  * mission type is laid out differently around a dwarf moon than around a red giant.
  */
 import { CONFIG } from '../game/config';
-import { MISSIONS } from '../game/missions/catalog';
+import { MISSIONS, MUTATORS, VARIANT_INFO } from '../game/missions/catalog';
 import type {
   Anchor,
   BonusSpec,
@@ -22,9 +22,11 @@ import type {
   MissionKind,
   MissionParams,
   MissionSpec,
+  MutatorId,
   PickupSpec,
   RockBeltSpec,
   TargetSpec,
+  VariantId,
   WaveSpec,
 } from '../game/missions/types';
 import type { Rng } from '../game/rng';
@@ -61,6 +63,11 @@ const NO_PARAMS: MissionParams = {
   nodes: [],
   overheat: 0,
   mouth: 0,
+  count: 0,
+  range: 0,
+  hold: 0,
+  hp: 0,
+  period: 0,
 };
 
 const BONUS_LABEL: Record<BonusSpec['id'], string> = {
@@ -74,6 +81,8 @@ const BONUS_LABEL: Record<BonusSpec['id'], string> = {
   noburn: 'NO ION BURNS',
   kill: 'DESTROY THE HUNTER',
   deep: 'DIVE BELOW THE PHOTON RING',
+  feat: 'MISSION CHALLENGE',
+  feat2: 'MISSION CHALLENGE',
 };
 
 const bonus = (...ids: BonusSpec['id'][]): BonusSpec[] => ids.map((id) => ({ id, label: BONUS_LABEL[id] }));
@@ -123,6 +132,9 @@ function emptyMission(kind: MissionKind, tier: number): MissionSpec {
     pickups: [],
     mines: [],
     rockBelts: [],
+    mutators: [],
+    variant: 'standard',
+    reward: 1,
   };
 }
 
@@ -729,6 +741,429 @@ function bossSentinel(m: MissionSpec, L: BaseLevel, rng: Rng): Partial<LevelDef>
   return { duration: 200 };
 }
 
+// ------------------------------------------------------------------ binary star navigation
+
+/** Period of the pair at the heart of a binary level (the primary's own path, else its companion star's). */
+function binaryPeriod(L: BaseLevel): number {
+  if (L.body.orbit) return Math.abs(L.body.orbit.period);
+  const star = L.companions.find((c) => c.kind === 'star');
+  return star ? Math.abs(star.period) : 12;
+}
+
+function binaryNav(m: MissionSpec, L: BaseLevel, rng: Rng): Partial<LevelDef> {
+  const mu = L.orbitMu;
+  const n = m.tier <= 1 ? 5 : m.tier === 2 ? 6 : 7;
+  // Wide gates, kept to the outer two thirds of the band: close in, the pair's shifting pull
+  // swings an orbit by more than any gate could allow for.
+  const gap = m.tier <= 1 ? 40 : m.tier === 2 ? 36 : 32;
+  const lo = L.safeMin + Math.max(22, 0.34 * (L.safeMax - L.safeMin));
+  const hi = L.safeMax - 20;
+  const period = binaryPeriod(L);
+  // Each gate rides the tide the two stars raise: it breathes in and out twice per binary orbit.
+  const tide = clamp(period / 2, 4.5, 9);
+  let angle = 3.2;
+  let r = clamp(L.startRadius, lo, hi);
+  const gates: GateSpec[] = [];
+  for (let i = 0; i < n; i++) {
+    let next = r;
+    for (let tries = 0; tries < 30; tries++) {
+      // Gentle steps: the pull of two moving stars already bends every transfer.
+      const step = i === 0 ? 16 : m.tier <= 1 ? 24 : 30;
+      next = clamp(r + rng.range(-step, step), lo, hi);
+      if (Math.abs(next - r) > 8 && laneFree(L, next, 14)) break;
+    }
+    r = next;
+    gates.push({ anchor: still(r, angle), gap, osc: m.tier <= 1 ? 4 : rng.range(5, 8), oscPeriod: tide });
+    angle += rng.range(1.7, 2.3);
+  }
+  m.gates = gates;
+  m.params.count = n;
+  // The mass-transfer stream between the stars flares along their axis on this beat.
+  m.params.period = clamp(period * 0.75, 7, 13) - (m.tier - 1) * 0.8;
+  m.params.range = 0.2 + 0.03 * Math.min(3, m.tier);
+  m.pickups = [];
+  for (const g of rng.shuffle(gates.slice(1)).slice(0, 3)) {
+    const side = g.anchor.r + (rng.chance(0.5) ? 1 : -1) * (gap / 2 + rng.range(14, 20));
+    m.pickups.push({ kind: 'shard', anchor: still(clamp(side, L.safeMin + 5, L.safeMax - 5), g.anchor.angle - rng.range(0.35, 0.6)) });
+  }
+  if (m.tier >= 3) {
+    m.fields = [{ anchor: still(clamp(gates[3].anchor.r + rng.range(-18, 18), lo, hi), gates[3].anchor.angle - 0.8), r: 22, turn: rng.sign() * 0.4 }];
+    m.features.push('magfield');
+  }
+  m.features.push('tidalgates', 'masstransfer');
+  const w = omegaAt(mu, (L.safeMin + L.safeMax) / 2);
+  const travel = angle / w;
+  m.par = Math.round(travel * 1.6 + 8);
+  m.window = Math.round(travel + (TAU / w) * 4 + 30);
+  m.ambient = 0.2;
+  m.bonus = bonus('clean', 'par', 'shards');
+  m.brief = `THREAD ${n} TIDAL GATES AROUND THE PAIR. THE STREAM BETWEEN THE STARS FLARES ALONG THEIR AXIS.`;
+  return { duration: m.window, mechanics: { ...L.mechanics, stream: { period: m.params.period, halfWidth: m.params.range } } };
+}
+
+// ------------------------------------------------------------------ solar flare avoidance
+
+function flareRun(m: MissionSpec, L: BaseLevel, rng: Rng): Partial<LevelDef> {
+  const mu = L.body.mu;
+  const width = L.safeMax - L.safeMin;
+  // The shield world rides low in the band on a real Keplerian orbit; its shadow reaches outward.
+  const rp = L.safeMin + clamp(width * 0.28, 16, 34);
+  const named = L.companions.find((c) => c.kind === 'planet' && c.name);
+  const shield: CompanionSpec = {
+    kind: 'planet',
+    name: named?.name ?? null,
+    orbitRadius: rp,
+    ecc: 0,
+    argPeri: 0,
+    period: TAU * Math.sqrt((rp * rp * rp) / mu),
+    phase: rng.range(0, TAU),
+    radius: 7,
+    // Very light: it has to shade the ship, not capture it - the shelter is flown right beside it.
+    mu: mu * 0.0008,
+    heatRadius: 0,
+    heatDps: 0,
+    look: named?.look ?? look('rock', ['#d8c8b0', '#8a6f5a', '#2a1d18'], { rim: '#ffd890', glow: '#ffb347', glowIntensity: 0.3 }),
+  };
+  m.startR = clamp(rp + 18, L.safeMin + 14, L.safeMax - 14);
+  // The shadow laps a ship on the starting lane once per synodic period. At tier 1 the flares keep
+  // that same beat - hold the lane and the shadow is overhead each time; later tiers fire faster
+  // than the shadow comes round, so the lane has to be changed between flares.
+  const synodic = TAU / (Math.sqrt(mu / (rp * rp * rp)) - Math.sqrt(L.orbitMu / (m.startR * m.startR * m.startR)));
+  m.params.count = [3, 4, 5][Math.min(2, m.tier - 1)];
+  m.params.period = synodic * [1, 0.84, 0.72][Math.min(2, m.tier - 1)];
+  m.params.hold = synodic;
+  m.params.range = [0.55, 0.48, 0.42][Math.min(2, m.tier - 1)];
+  m.params.hp = [30, 36, 42][Math.min(2, m.tier - 1)];
+  m.pickups = bandShards(rng, L, 1.2);
+  if (m.tier >= 2) {
+    m.pickups.push({ kind: 'aegis', anchor: orbiting(mu, L.safeMax - 14, rng.range(0, TAU)) });
+    m.features.push('aegis');
+  }
+  m.features.push('superflare', 'shadow');
+  m.window = Math.round(m.params.count * m.params.period + synodic + 22);
+  m.par = m.window - 8;
+  m.ambient = 0.45;
+  m.bonus = [{ id: 'feat', label: 'SHELTERED FROM EVERY SUPERFLARE' }, ...bonus('shards')];
+  m.brief = `${m.params.count} SUPERFLARES ARE COMING. BE BEHIND THE PLANET - IN ITS SHADOW - EACH TIME ONE FIRES.`;
+  const v = Math.sqrt(mu / m.startR);
+  return {
+    startRadius: m.startR,
+    // Other in-band companions would turn the shelter into a pinball table; distant ones stay.
+    companions: [shield, ...L.companions.filter((c) => c !== named && c.orbitRadius * (1 - c.ecc) - c.radius > L.safeMax + 16)],
+    duration: m.window,
+    thrustScale: Math.pow(v / 108, 0.7),
+    modifiers: L.modifiers.includes('flares') ? L.modifiers : [...L.modifiers, 'flares'],
+    mechanics: { ...L.mechanics, belts: L.mechanics.belts.filter((b) => Math.abs(b.radius - rp) > b.spread + 20) },
+  };
+}
+
+// ------------------------------------------------------------------ wormhole traversal
+
+function wormholeRun(m: MissionSpec, L: BaseLevel, rng: Rng): Partial<LevelDef> {
+  const mu = L.body.mu;
+  m.orbitRule = 'free';
+  m.arena = 345;
+  const startR = Math.max(L.body.radius + 30, L.safeMin + 14);
+  m.startR = startR;
+  // Shelves: the start orbit, the middle orbit(s), the beacon's orbit. Each hop is one wormhole.
+  const hops = m.tier <= 1 ? 2 : 3;
+  const shelves = hops === 2 ? [startR + 26, 188, 276] : [startR + 26, 160, 222, 284];
+  const wh: MissionSpec['wormholes'] = [];
+  let angle = rng.range(2.4, 3.2);
+  for (let i = 0; i < hops; i++) {
+    const out = angle + rng.range(1.8, 4.2);
+    // After the first, each mouth sits a little off the orbit the last one releases you on: a trim, not a climb.
+    const offset = i === 0 ? 0 : rng.sign() * rng.range(9, 13);
+    wh.push({ a: still(shelves[i] + offset, angle), b: still(shelves[i + 1], out), r: 11, circular: true });
+    // The next mouth lies further along the orbit the ship comes out on.
+    angle = out + rng.range(1.5, 2.6);
+  }
+  if (m.tier >= 2) {
+    // A decoy sits right on the middle shelf, ahead of the true mouth: sidestep it or be dropped back to the start.
+    const mid = wh[1];
+    wh.push({ a: still(shelves[1], mid.a.angle - 0.75), b: still(startR + 8, rng.range(0, TAU)), r: 8, circular: true });
+    m.features.push('decoy');
+  }
+  m.wormholes = wh;
+  m.params.count = hops;
+  const beaconR = shelves[shelves.length - 1];
+  m.targets = [{ kind: 'beacon', anchor: still(beaconR, angle), r: 22, hidden: false }];
+  // Fuel for lining up on mouths and trimming orbits - about two thirds of what a direct climb to the beacon costs.
+  const direct = transferDv(mu, startR, beaconR) / thrustAt(mu, startR);
+  m.fuel = Math.round(direct * [0.64, 0.57, 0.5][Math.min(2, m.tier - 1)] * 100) / 100;
+  m.fuelRegen = 0.04;
+  // The spare fuel cell sits off the shelf: fetching it costs a trim of its own.
+  m.pickups = [{ kind: 'fuel', anchor: still(shelves[1] + 16, wh[0].b.angle + 0.9) }];
+  for (let i = 0; i < 3; i++) {
+    const shelf = shelves[Math.min(shelves.length - 1, i + (hops === 2 ? 0 : 1))];
+    m.pickups.push({ kind: 'shard', anchor: still(shelf + (i % 2 ? -15 : 15), rng.range(0, TAU)) });
+  }
+  if (m.tier >= 3) {
+    m.mines = Array.from({ length: 3 }, (_, i) => ({ anchor: orbiting(mu, shelves[2] + rng.range(-10, 10), (i * TAU) / 3) }));
+    m.features.push('mines');
+  }
+  m.features.push('wormhole', 'fuel');
+  m.window = 115 + 15 * (hops - 2);
+  m.par = 44 + 12 * (hops - 2);
+  m.preview = 6;
+  m.ambient = 0.15;
+  m.bonus = bonus('fuel', 'par', 'shards');
+  m.brief = `THE BEACON IS BEYOND YOUR FUEL. CHAIN ${hops} WORMHOLES - MATCHING COLOURS LINK - TO REACH IT.`;
+  const v = Math.sqrt(mu / startR);
+  return { startRadius: startR, duration: m.window, thrustScale: Math.pow(v / 108, 0.7), mechanics: { ...L.mechanics, belts: [] }, companions: [] };
+}
+
+// ------------------------------------------------------------------ gravitational anomaly
+
+function anomalyMission(m: MissionSpec, L: BaseLevel, rng: Rng): Partial<LevelDef> {
+  const n = [4, 5, 6][Math.min(2, m.tier - 1)];
+  const half = [10, 9, 8][Math.min(2, m.tier - 1)];
+  const lo = L.safeMin + half + 8;
+  const hi = L.safeMax - half - 8;
+  // Lane radii: each a real change of orbit from the one before, none on a belt or a moon's path.
+  const lanes: number[] = [];
+  let r = L.startRadius;
+  for (let i = 0; i < n; i++) {
+    let next = r;
+    for (let tries = 0; tries < 30; tries++) {
+      next = Math.round(clamp(r + rng.sign() * rng.range(16, 40), lo, hi));
+      if (Math.abs(next - r) >= 14 && laneFree(L, next, half + 4)) break;
+    }
+    lanes.push(next);
+    r = next;
+  }
+  m.params.nodes = lanes;
+  m.params.count = n;
+  m.params.range = half;
+  m.params.hold = [5, 5.5, 6][Math.min(2, m.tier - 1)];
+  // How hard the central mass breathes, and how often it throws a wave.
+  m.params.growth = [0.07, 0.1, 0.13][Math.min(2, m.tier - 1)];
+  m.params.period = 9;
+  m.params.waveEvery = [13, 11, 9.5][Math.min(2, m.tier - 1)];
+  m.pickups = bandShards(rng, L, 1.4);
+  m.features.push('resonance', 'breathing', 'waves2');
+  m.window = Math.round(n * (m.params.hold + 15) + 24);
+  m.par = Math.round(n * (m.params.hold + 8) + 6);
+  m.ambient = 0.35;
+  m.bonus = [{ id: 'feat', label: 'NEVER LOSE A LANE ONCE IT IS HALF CHARGED' }, ...bonus('par', 'shards')];
+  m.brief = `THE MASS IS BREATHING. HOLD THE RESONANCE LANE UNTIL IT CHARGES, THEN FOLLOW IT - ${n} TIMES.`;
+  return { duration: m.window };
+}
+
+// ------------------------------------------------------------------ escort
+
+function escort(m: MissionSpec, L: BaseLevel, rng: Rng): Partial<LevelDef> {
+  const mu = L.orbitMu;
+  const mid = (L.safeMin + L.safeMax) / 2;
+  const rc = clearRadius(L, clamp(mid + rng.range(-12, 12), L.safeMin + 22, L.safeMax - 22), L.safeMin + 22, L.safeMax - 22, 18);
+  m.targets = [{ kind: 'convoy', anchor: orbiting(mu, rc, rng.range(0.9, 1.5)), r: 20, hidden: false, label: `TENDER ${String.fromCharCode(65 + Math.floor(rng.next() * 26))}-${10 + Math.floor(rng.next() * 89)}` }];
+  m.params.hp = 100;
+  m.params.range = [36, 32, 29][Math.min(2, m.tier - 1)];
+  m.params.hold = [38, 46, 54][Math.min(2, m.tier - 1)];
+  m.params.period = [5.2, 4.4, 3.8][Math.min(2, m.tier - 1)];
+  m.params.count = m.tier >= 2 ? 2 : 1;
+  m.pickups = bandShards(rng, L, 2.0);
+  m.pickups.push({ kind: 'repair', anchor: orbiting(mu, clamp(rc + 26, L.safeMin + 8, L.safeMax - 8), rng.range(0, TAU)) });
+  if (m.tier >= 3) {
+    m.mines = mines(rng, mu, 3, L.safeMin + 12, L.safeMax - 12);
+    m.features.push('mines');
+  }
+  m.features.push('convoy', 'shieldlink');
+  m.window = 0;
+  m.par = m.params.hold;
+  m.ambient = 0.5;
+  m.bonus = [{ id: 'feat', label: 'TENDER TAKES NO DAMAGE' }, ...bonus('nohit', 'shards')];
+  m.brief = 'A SURVEY TENDER IS CROSSING. FLY CLOSE: YOUR SHIELD LINK ABSORBS WHAT IS THROWN AT IT.';
+  return { duration: m.params.hold + 20, startRadius: clamp(rc - 6, L.safeMin + 14, L.safeMax - 14) };
+}
+
+// ------------------------------------------------------------------ resource extraction (mining)
+
+function mining(m: MissionSpec, L: BaseLevel, rng: Rng): Partial<LevelDef> {
+  const mu = L.orbitMu;
+  const quota = [3, 4, 5][Math.min(2, m.tier - 1)];
+  const rocks = quota + 2;
+  m.params.quota = quota;
+  m.params.count = rocks;
+  m.params.captureR = 22;
+  m.params.hold = [2.4, 2.8, 3.2][Math.min(2, m.tier - 1)];
+  m.params.syncTime = m.params.hold;
+  const lo = L.safeMin + 12;
+  const hi = L.safeMax - 12;
+  // Rich veins sit where it hurts: hard against the inner edge (heat, drag) or the outer edge.
+  const rich = [L.safeMin + 7, L.safeMax - 7];
+  m.targets = [];
+  for (let i = 0; i < rocks; i++) {
+    const isRich = i < 2;
+    const want = isRich ? rich[i] : lo + ((i - 2 + rng.range(0.15, 0.85)) / (rocks - 2)) * (hi - lo);
+    const r = isRich ? want : clearRadius(L, want, lo, hi, 12);
+    m.targets.push({ kind: 'ore', anchor: orbiting(mu, r, (i / rocks) * TAU + rng.range(0.5, 1.3)), r: 22, hidden: false, rich: isRich });
+  }
+  m.pickups = bandShards(rng, L, 1.7);
+  if (m.tier >= 2) {
+    m.mines = mines(rng, mu, 2 + m.tier, lo, hi);
+    m.features.push('mines');
+  }
+  m.features.push('ore', 'drill');
+  m.window = 105 + 15 * m.tier;
+  m.par = 40 + 12 * m.tier;
+  m.ambient = 0.7;
+  m.bonus = [{ id: 'feat', label: 'CUT A RICH VEIN' }, ...bonus('nohit', 'shards')];
+  m.brief = `MATCH ORBITS WITH ORE ROCKS AND CUT ${quota} LOADS. RICH VEINS (DOUBLE) HUG THE EDGES OF THE BAND.`;
+  return { duration: m.window };
+}
+
+// ------------------------------------------------------------------ astronomical discovery
+
+function discovery(m: MissionSpec, L: BaseLevel, rng: Rng): Partial<LevelDef> {
+  const mu = L.orbitMu;
+  // The source hides off the starting lane, towards one edge of the band.
+  const inner = rng.chance(0.5);
+  const want = inner ? L.safeMin + rng.range(14, 26) : L.safeMax - rng.range(14, 26);
+  const r = clearRadius(L, want, L.safeMin + 12, L.safeMax - 12, 14);
+  m.targets = [{ kind: 'signal', anchor: orbiting(mu, r, rng.range(1.6, 4.6)), r: 28, hidden: true }];
+  m.params.range = [50, 44, 38][Math.min(2, m.tier - 1)];
+  m.params.captureR = 24;
+  m.params.hold = [4, 4.5, 5][Math.min(2, m.tier - 1)];
+  m.pickups = bandShards(rng, L, 2.2);
+  m.features.push('signal', 'scanlock');
+  m.window = 135;
+  m.par = 46 + 6 * m.tier;
+  m.ambient = 0.55;
+  m.bonus = bonus('par', 'nohit', 'shards');
+  m.brief = 'AN UNLISTED SOURCE IS HIDING HERE. THE SIGNAL STRENGTHENS AS YOU CLOSE IN. FIND IT AND HOLD THE SCAN.';
+  return { duration: m.window };
+}
+
+// ------------------------------------------------------------------ system survey
+
+function survey(m: MissionSpec, L: BaseLevel, rng: Rng): Partial<LevelDef> {
+  const mu = L.body.mu;
+  let companions = L.companions;
+  const worlds = (): number[] => companions.map((c, i) => (c.kind === 'star' ? -1 : i)).filter((i) => i >= 0);
+  if (worlds().length < 2) {
+    // A system with too few catalogued companions gets unnamed survey targets beyond the band.
+    const extra: CompanionSpec[] = [];
+    for (let i = worlds().length; i < 2; i++) {
+      const a = L.safeMax + 26 + i * 24;
+      extra.push({ kind: 'moon', name: null, orbitRadius: a, ecc: 0, argPeri: 0, period: TAU * Math.sqrt((a * a * a) / mu), phase: rng.range(0, TAU), radius: 6, mu: mu * 0.01, heatRadius: 0, heatDps: 0, look: look('rock', ['#c9c2d6', '#7a6d8a', '#2a2233']) });
+    }
+    companions = [...L.companions, ...extra];
+  }
+  const max = [3, 4, 5][Math.min(2, m.tier - 1)];
+  const picked = worlds().slice(0, max);
+  m.targets = picked.map((i) => {
+    const c = companions[i];
+    // The scan field reaches far enough to be flown from inside the band, however far out the world is.
+    const near = clamp(c.orbitRadius, L.safeMin + 10, L.safeMax - 10);
+    const range = Math.abs(c.orbitRadius - near) + c.radius + 27;
+    return { kind: 'scan' as const, anchor: orbiting(mu, c.orbitRadius, c.phase, Math.sign(c.period) || 1), r: range, hidden: false, companion: i, label: c.name ?? `UNNAMED ${i + 1}` };
+  });
+  m.params.count = m.targets.length;
+  m.params.hold = [2.2, 2.6, 3][Math.min(2, m.tier - 1)];
+  m.pickups = bandShards(rng, L, 1.9);
+  m.features.push('survey', 'flyby');
+  m.window = 110 + 28 * m.targets.length;
+  m.par = 30 + 16 * m.targets.length;
+  m.preview = 5;
+  m.ambient = 0.4;
+  m.bonus = [{ id: 'feat', label: 'A CLOSE PASS: INSIDE 3 RADII OF A WORLD' }, ...bonus('nohit', 'shards')];
+  m.brief = `FLY THROUGH THE SCAN FIELD OF ${m.targets.length} WORLDS. THE CLOSER THE PASS, THE FASTER THE SCAN.`;
+  return companions === L.companions ? { duration: m.window } : { duration: m.window, companions };
+}
+
+// ------------------------------------------------------------------ twists and variants
+
+/** Lay the director's twists over a planned mission. Each one adds something to fly around or to find. */
+function applyTwists(m: MissionSpec, L: BaseLevel, patch: Partial<LevelDef>, rng: Rng): Partial<LevelDef> {
+  const mu = L.orbitMu;
+  const free = m.orbitRule === 'free';
+  // Where loose things can be put: the band, or (travel missions) the space the climb passes through.
+  const lo = free ? (m.startR || L.startRadius) + 18 : L.safeMin + 10;
+  const hi = free ? Math.min(m.arena - 60, 230) : L.safeMax - 10;
+  const somewhere = (): number => rng.range(lo, hi);
+  const out: Partial<LevelDef> = { ...patch };
+  for (const id of m.mutators) {
+    switch (id) {
+      case 'storm': {
+        const mods = new Set<ModifierKind>(out.modifiers ?? L.modifiers);
+        mods.add('flares');
+        mods.add('waves');
+        out.modifiers = [...mods];
+        m.features.push('flares');
+        break;
+      }
+      case 'lowfuel':
+        if (m.fuel <= 0) {
+          m.fuel = 12;
+          m.fuelRegen = 0.28;
+          m.pickups.push({ kind: 'fuel', anchor: orbiting(mu, somewhere(), rng.range(0, TAU)) });
+          m.features.push('fuel');
+        }
+        break;
+      case 'rich':
+        out.energyRichness = (out.energyRichness ?? L.energyRichness) * 1.6;
+        for (let i = 0; i < 2; i++) m.pickups.push({ kind: 'cell', anchor: orbiting(mu, somewhere(), rng.range(0, TAU)) });
+        break;
+      case 'mined':
+        if (m.mines.length === 0) {
+          m.mines = mines(rng, mu, 3, lo, hi);
+          m.features.push('mines');
+        }
+        break;
+      case 'wormholes':
+        if (m.wormholes.length === 0 && !free) {
+          const a = rng.range(0, TAU);
+          m.wormholes = [{ a: still(L.safeMin + 20, a), b: still(L.safeMax - 20, a + Math.PI + rng.range(-0.6, 0.6)), r: 10 }];
+          m.features.push('wormhole');
+        }
+        break;
+      case 'magnetic':
+        if (m.fields.length === 0) {
+          m.fields = Array.from({ length: 2 }, () => ({ anchor: still(somewhere(), rng.range(0, TAU)), r: rng.range(18, 24), turn: rng.sign() * rng.range(0.3, 0.45) }));
+          m.features.push('magfield');
+        }
+        break;
+      case 'haste':
+        if (m.window > 0) {
+          m.window = Math.max(Math.round(m.par * 1.5 + 8), Math.round(m.window * 0.78));
+          out.duration = m.window;
+        }
+        break;
+      case 'dense':
+        m.ambient = Math.max(0.5, m.ambient * 1.5);
+        break;
+      case 'aegis':
+        if (!m.pickups.some((p) => p.kind === 'aegis')) {
+          m.pickups.push({ kind: 'aegis', anchor: orbiting(mu, somewhere(), rng.range(0, TAU)) });
+          m.features.push('aegis');
+        }
+        break;
+      case 'salvage':
+        m.pickups.push({ kind: 'repair', anchor: orbiting(mu, somewhere(), rng.range(0, TAU)) });
+        m.pickups.push({ kind: 'shard', anchor: still(somewhere(), rng.range(0, TAU)) });
+        break;
+    }
+  }
+  if (m.variant === 'pristine') m.pickups.push({ kind: 'shard', anchor: orbiting(mu, somewhere(), rng.range(0, TAU)) });
+  // Hidden supply caches: always in a pristine sector, otherwise in about half of them from sector 3.
+  // They are only detectable - and only collectable - with a Deep-Space Scanner fitted.
+  if (!m.boss && (m.variant === 'pristine' || (L.index >= 3 && rng.chance(0.5)))) {
+    m.pickups.push({ kind: 'cache', anchor: orbiting(mu, somewhere(), rng.range(0, TAU), rng.chance(0.75) ? 1 : -1) });
+  }
+  m.features = [...new Set(m.features)];
+  return out;
+}
+
+/** What a sector pays relative to a plain tier-1 mission: its difficulty, tier, variant and twists. */
+export function rewardFor(kind: MissionKind, tier: number, mutators: readonly MutatorId[], variant: VariantId): number {
+  const info = MISSIONS[kind];
+  let r = 1 + 0.12 * (info.difficulty - 2) + 0.1 * (Math.max(1, tier) - 1) + VARIANT_INFO[variant].reward;
+  for (const id of mutators) r += MUTATORS[id].reward;
+  if (info.boss) r += 0.6;
+  return Math.round(Math.max(0.6, r) * 100) / 100;
+}
+
 const PLANNERS: Record<MissionKind, (m: MissionSpec, L: BaseLevel, rng: Rng) => Partial<LevelDef>> = {
   survival,
   precision,
@@ -738,14 +1173,28 @@ const PLANNERS: Record<MissionKind, (m: MissionSpec, L: BaseLevel, rng: Rng) => 
   event_horizon: eventHorizon,
   nebula,
   pursuit,
+  binary_nav: binaryNav,
+  flare_run: flareRun,
+  wormhole: wormholeRun,
+  anomaly: anomalyMission,
+  escort,
+  mining,
+  discovery,
+  survey,
   boss_neutron: bossNeutron,
   boss_devourer: bossDevourer,
   boss_sentinel: bossSentinel,
 };
 
-export function planMission(kind: MissionKind, tier: number, level: BaseLevel): MissionPlan {
+export function planMission(kind: MissionKind, tier: number, level: BaseLevel, mutators: readonly MutatorId[] = [], variant: VariantId = 'standard'): MissionPlan {
   const rng = subRng(level.seed, `mission:${kind}`);
   const mission = emptyMission(kind, Math.max(1, tier));
-  const patch = PLANNERS[kind](mission, level, rng);
+  const allowed = MISSIONS[kind].mutators;
+  mission.mutators = mutators.filter((id) => allowed.includes(id));
+  mission.variant = MISSIONS[kind].boss ? 'standard' : variant;
+  mission.reward = rewardFor(kind, mission.tier, mission.mutators, mission.variant);
+  const planned = PLANNERS[kind](mission, level, rng);
+  // Twists draw from their own stream, so adding one never shifts the base layout.
+  const patch = applyTwists(mission, level, planned, subRng(level.seed, `twists:${kind}`));
   return { mission, patch };
 }

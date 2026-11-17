@@ -15,15 +15,18 @@ import {
   buildDebrisSprites,
   buildMoteSprites,
   buildRockSprites,
-  buildShipSprites,
   DEBRIS_FRAMES,
   frameIndex,
   ICE_RADII,
   ICE_RAMP,
   ROCK_FRAMES,
-  SHIP_FRAMES,
 } from './sprites';
-import type { ShipSprites } from './sprites';
+import { ShipPainter } from './shipPainter';
+import { resolveLook } from '../cosmetics/catalog';
+import type { ShipLook } from '../cosmetics/catalog';
+import { Ship } from '../player';
+
+const TRAIL_POINTS = Ship.trailLength;
 
 export interface RenderOptions {
   screenShake: boolean;
@@ -64,7 +67,6 @@ export class Renderer {
   camX = 0;
   camY = 0;
   private time = 0;
-  private ship: ShipSprites;
   private rocks: HTMLCanvasElement[][][] = [];
   private rockZoom = -1;
   private debris: HTMLCanvasElement[][];
@@ -86,12 +88,13 @@ export class Renderer {
   private hurtVignette: HTMLCanvasElement | null = null;
   private pathBuf = { x: 0, y: 0 };
   private missionLayer = new MissionLayer((r, c, i) => this.glow(r, c, i));
+  private painter = new ShipPainter(resolveLook(null));
+  private trailBuf = new Float32Array(TRAIL_POINTS * 2);
   opts: RenderOptions = { screenShake: true, reducedEffects: false };
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = ctx2d(canvas);
-    this.ship = buildShipSprites();
     this.debris = buildDebrisSprites();
     this.motes = buildMoteSprites();
   }
@@ -943,27 +946,30 @@ export class Renderer {
     ctx.globalAlpha = 1;
   }
 
+  /** Repaint the ship with a cosmetic loadout. */
+  setLook(look: ShipLook): void {
+    this.painter.setLook(look);
+  }
+
   private drawShip(run: Run, toSx: (x: number) => number, toSy: (y: number) => number, menu: boolean): void {
     const ctx = this.ctx;
     const s = run.ship;
     if (!s.visible) return;
     const p = this.pathBuf;
 
-    // Trail.
-    const n = Math.min(s.trailCount, run.mods.ionTrail > 0 ? 48 : menu ? 30 : 26);
+    // Trail: the fitted trail cosmetic decides its geometry; the Ion Trail upgrade brightens it.
     const ion = run.mods.ionTrail > 0;
-    for (let i = 1; i < n; i++) {
+    const n = Math.min(s.trailCount, TRAIL_POINTS);
+    for (let i = 0; i < n; i++) {
       s.trailPoint(i, p);
-      const k = i / n;
-      ctx.globalAlpha = (k < 0.3 ? 0.7 : k < 0.6 ? 0.45 : 0.2) * (ion ? 1.2 : 1);
-      ctx.fillStyle = k < 0.4 ? PALETTE.cyan : k < 0.75 ? PALETTE.blue : PALETTE.violet;
-      ctx.fillRect(toSx(p.x), toSy(p.y), 1, 1);
+      this.trailBuf[i * 2] = toSx(p.x);
+      this.trailBuf[i * 2 + 1] = toSy(p.y);
     }
-    ctx.globalAlpha = 1;
+    this.painter.drawTrail(ctx, this.trailBuf, n, this.time, ion ? 1.25 : 1);
 
     // Boost afterimages.
     for (const g of run.ghosts) {
-      const f = this.ship.ghost[frameIndex(g.heading, SHIP_FRAMES)];
+      const f = this.painter.silhouette(g.heading, 'ghost');
       ctx.globalAlpha = 0.5 * (1 - g.t / 0.3);
       ctx.drawImage(f, toSx(g.x) - (f.width >> 1), toSy(g.y) - (f.height >> 1));
     }
@@ -971,45 +977,37 @@ export class Renderer {
 
     const sx = toSx(s.x);
     const sy = toSy(s.y);
-    const fi = frameIndex(s.heading, SHIP_FRAMES);
-    const hx = Math.cos(s.heading);
-    const hy = Math.sin(s.heading);
 
-    // Engine flame.
-    if (s.thrust > 0) {
-      const flick = Math.random();
-      const len = 2 + Math.floor(flick * 3) + (run.overdrive > 0 ? 2 : 0);
-      for (let i = 0; i < len; i++) {
-        ctx.fillStyle = i === 0 ? '#ffffff' : i < 2 ? '#ffc94d' : run.overdrive > 0 ? '#ff4d5e' : '#ff8a3d';
-        ctx.fillRect(Math.round(sx - hx * (6 + i)), Math.round(sy - hy * (6 + i)), 1, 1);
-      }
-      ctx.globalCompositeOperation = 'lighter';
-      const g = this.glow(5, '#ff8a3d', 0.9);
-      ctx.drawImage(g, Math.round(sx - hx * 7) - (g.width >> 1), Math.round(sy - hy * 7) - (g.height >> 1));
-      ctx.globalCompositeOperation = 'source-over';
-    } else if (s.thrust < 0) {
-      ctx.fillStyle = Math.random() < 0.5 ? '#3ef2ff' : '#e8f0ff';
-      ctx.fillRect(Math.round(sx + hx * 7), Math.round(sy + hy * 7), 1, 1);
-    }
-
-    // Hull sprite (blink during grace period).
+    // Hull, engine, core and special effect (the hull blinks during the grace period).
     const blinking = s.invuln > 0 && run.phase !== 'clearing' && run.phase !== 'warping' && Math.floor(s.invuln * 14) % 2 === 0;
-    if (!blinking) {
-      const set = run.hurtFlash > 0.7 ? this.ship.white : s.boostT > 0 ? this.ship.ghost : this.ship.frames;
-      const f = set[fi];
-      if (s.boostT > 0) {
-        ctx.globalCompositeOperation = 'lighter';
-        const g = this.glow(9, '#3ef2ff', 1);
-        ctx.drawImage(g, sx - (g.width >> 1), sy - (g.height >> 1));
-        ctx.globalCompositeOperation = 'source-over';
-      }
-      ctx.drawImage(f, sx - (f.width >> 1), sy - (f.height >> 1));
-      if (s.boostT > 0) {
-        const f2 = this.ship.frames[fi];
-        ctx.globalAlpha = 0.6;
-        ctx.drawImage(f2, sx - (f2.width >> 1), sy - (f2.height >> 1));
-        ctx.globalAlpha = 1;
-      }
+    this.painter.draw(
+      ctx,
+      { x: sx, y: sy, heading: s.heading, time: this.time, thrust: s.thrust, boosting: s.boostT > 0, hurt: run.hurtFlash > 0.7, overdrive: run.overdrive > 0, reduced: this.opts.reducedEffects },
+      !blinking,
+    );
+
+    // Phase Drive: a violet shimmer while phased.
+    if (s.boostT > 0 && run.mods.m.phaseLevel > 0) {
+      ctx.fillStyle = '#b8a4ff';
+      ctx.globalAlpha = 0.6;
+      dottedRing(ctx, sx, sy, 8 + Math.sin(this.time * 20) * 1.5, 3, this.time * 6);
+      ctx.globalAlpha = 1;
+    }
+    // Gravitational Anchor: a grounding ring that closes as the charge returns.
+    if (!menu && run.mods.m.anchorCd > 0 && !this.opts.reducedEffects) {
+      const ready = run.anchorCd <= 0;
+      ctx.fillStyle = '#7dffd8';
+      ctx.globalAlpha = ready ? 0.5 : 0.18;
+      dottedRing(ctx, sx, sy, 12, ready ? 4 : 8, ready ? this.time * 0.8 : 0);
+      ctx.globalAlpha = 1;
+    }
+    // Deep-Space Scanner: a pulse that sweeps out from the ship.
+    if (!menu && run.mods.m.deepScan > 0 && !this.opts.reducedEffects) {
+      const k = (this.time * 0.35) % 1;
+      ctx.fillStyle = '#fff3a8';
+      ctx.globalAlpha = 0.22 * (1 - k);
+      dottedRing(ctx, sx, sy, (20 + k * 90) * this.zoom, 6, 0);
+      ctx.globalAlpha = 1;
     }
 
     // Shield rings.
@@ -1036,7 +1034,7 @@ export class Renderer {
     const z = this.zoom;
     const hw = this.vw / 2 / z;
     const hh = this.vh / 2 / z;
-    const base = CONFIG.WARN_WINDOW + run.mods.scanner * 1.0;
+    const base = CONFIG.WARN_WINDOW + run.mods.scanner * 1.0 + run.mods.m.warnBonus;
     const blink = Math.floor(this.time * 7) % 2 === 0;
     for (const h of run.hazards) {
       if (h.orbiting || h.offPlane) continue;

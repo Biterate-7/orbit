@@ -52,15 +52,15 @@ export interface ParsedCode {
   catalogueVersion: number;
   index: number;
   seed: number;
-  /** Mission suffix (e.g. AR2); absent for survival sectors. */
-  mission?: { code: string; tier: number };
+  /** Mission suffix (e.g. AR2, AR2E+DM); absent for plain survival sectors. */
+  mission?: { code: string; tier: number; variant: string; mutators: string };
 }
 
 export function parseLevelCode(code: string): ParsedCode | null {
-  const m = /^C(\d+)-(\d+)-([0-9A-F]{8})(?:-([A-Z]{2})(\d+))?$/i.exec(code.trim());
+  const m = /^C(\d+)-(\d+)-([0-9A-F]{8})(?:-([A-Z]{2})(\d+)([EPX])?(?:\+([A-Z]+))?)?$/i.exec(code.trim());
   if (!m) return null;
   const out: ParsedCode = { catalogueVersion: Number(m[1]), index: Number(m[2]), seed: parseInt(m[3], 16) >>> 0 };
-  if (m[4]) out.mission = { code: m[4].toUpperCase(), tier: Number(m[5]) };
+  if (m[4]) out.mission = { code: m[4].toUpperCase(), tier: Number(m[5]), variant: (m[6] ?? '').toUpperCase(), mutators: (m[7] ?? '').toUpperCase() };
   return out;
 }
 

@@ -7,13 +7,19 @@ import { Renderer } from './render/renderer';
 import { Run } from './run';
 import type { RunSink } from './run';
 import type { Controls } from './player';
-import { progressFrom, recordVisit } from '../progression/discovery';
-import { newlyCompleted } from '../progression/milestones';
-import { PERMANENTS, UPGRADES, UPGRADE_ORDER, partUnlocked } from './upgrades';
-import { betterRank } from './persistence';
-import { MISSIONS } from './missions/catalog';
+import { progressFrom } from '../progression/discovery';
+import { Progression } from '../progression/service';
+import type { Outcome } from '../progression/events';
+import { levelFor } from '../progression/level';
+import { MISSIONS, MUTATORS, VARIANT_INFO } from './missions/catalog';
+import { resolveLook } from './cosmetics/catalog';
+import type { Loadout } from './cosmetics/catalog';
+import { SYNERGIES } from './modules';
+import { levelForSystem } from '../generation/levelGenerator';
+import { sectorsToBoss } from '../generation/missionDirector';
+import type { StarSystem } from '../astronomy/systems/types';
 import { generateLevelFromSeed } from '../generation/levelGenerator';
-import { CURRICULUM } from './missions/catalog';
+import { DIRECTOR } from '../generation/missionDirector';
 import type {
   HudMessage,
   HudState,
@@ -36,7 +42,9 @@ export type EngineEvent =
   | { type: 'offer'; options: UpgradeOffer[] }
   | { type: 'intro'; intro: LevelIntro }
   | { type: 'debrief'; debrief: MissionDebrief }
-  | { type: 'gameover'; summary: RunSummary };
+  | { type: 'gameover'; summary: RunSummary }
+  /** Something lasting was earned: achievements, pilot levels, cosmetics, a discovered synergy. */
+  | { type: 'reward'; outcome: Outcome };
 
 const EMPTY_OBJECTIVE: ObjectiveHud = {
   title: '',
@@ -54,6 +62,11 @@ const EMPTY_OBJECTIVE: ObjectiveHud = {
 
 type Listener = (e: EngineEvent) => void;
 
+/** Sector a practice run of a mission is generated for. */
+export function practiceSector(kind: MissionKind, tier = 1): number {
+  return tier > 1 ? Math.max(DIRECTOR.tiers.two, MISSIONS[kind].minSector) : Math.max(1, MISSIONS[kind].minSector);
+}
+
 /**
  * Owns the canvas, the requestAnimationFrame loop, the fixed-timestep simulation and the
  * high-level game state machine. React only observes it through events and the HUD snapshot.
@@ -65,6 +78,7 @@ export class Engine {
   private canvas: HTMLCanvasElement;
   private container: HTMLElement;
   private store: SaveStore;
+  readonly progress: Progression;
   private run: Run;
   private menuRun: Run;
   phase: EnginePhase = 'menu';
@@ -87,6 +101,11 @@ export class Engine {
   private runMilestones: string[] = [];
   /** Ship parts unlocked during the current run. */
   private runParts: string[] = [];
+  /** Credits paid, pilot levels reached and cosmetics granted during the current run. */
+  private runCredits = 0;
+  private runLevels: number[] = [];
+  private runCosmetics: string[] = [];
+  private runXp = 0;
   readonly hud: HudState = {
     level: 1,
     levelName: '',
@@ -111,17 +130,22 @@ export class Engine {
     combo: 0,
     message: null,
     objective: EMPTY_OBJECTIVE,
+    burst: false,
+    anchor: -1,
+    credits: 0,
   };
 
   constructor(container: HTMLElement, store: SaveStore) {
     this.container = container;
     this.store = store;
+    this.progress = new Progression(store);
     this.settings = store.get().settings;
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'game-canvas';
     this.canvas.setAttribute('aria-label', 'ORBIT//LOST game view');
     container.appendChild(this.canvas);
     this.renderer = new Renderer(this.canvas);
+    this.renderer.setLook(resolveLook(store.get().inventory.equipped));
     this.menuRun = new Run({ demo: true, sink: this.demoSink, seed: 77 });
     this.run = this.menuRun;
     this.applySettings(this.settings);
@@ -157,12 +181,23 @@ export class Engine {
     this.run.setPreferences(s.sensitivity, s.reducedEffects);
   }
 
+  /** Repaint the ship with a cosmetic loadout (hangar changes apply immediately, menu ship included). */
+  applyLook(loadout: Loadout): void {
+    this.renderer.setLook(resolveLook(loadout));
+  }
+
   startRun(level?: LevelDef, single = false): void {
     this.audio.unlock();
     const save = this.store.get();
     this.introKey++;
     this.runMilestones = [];
     this.runParts = [];
+    this.runCredits = 0;
+    this.runLevels = [];
+    this.runCosmetics = [];
+    this.runXp = 0;
+    const look = resolveLook(save.inventory.equipped);
+    this.renderer.setLook(look);
     this.run = new Run({
       demo: false,
       sink: this.sink,
@@ -173,6 +208,9 @@ export class Engine {
       level,
       modifiers: save.runModifiers,
       single,
+      modules: { levels: save.modules.levels, equipped: save.modules.equipped },
+      look,
+      director: { experience: save.journey.sectorsCleared },
     });
     this.resize();
     this.acc = 0;
@@ -254,13 +292,24 @@ export class Engine {
 
   /**
    * Mission practice: one freshly seeded sector of a mission type the player has already met,
-   * at the sector where the curriculum first introduces it.
+   * at the earliest sector the director can schedule it (or the first tier-2 sector).
    */
   playMission(kind: MissionKind, tier = 1): void {
-    const first = CURRICULUM.indexOf(kind) + 1 || 16;
-    const index = tier > 1 ? Math.max(first, CURRICULUM.lastIndexOf(kind) + 1) : first;
+    const index = practiceSector(kind, tier);
     const seed = (Math.random() * 0xffffffff) >>> 0;
     this.startRun(generateLevelFromSeed(seed, index, new Set(), undefined, { kind, tier }), true);
+  }
+
+  /**
+   * Fly one sector set in a chosen star system from the catalogue. Counts as practice (half pay,
+   * no run records), but discoveries made there are real.
+   */
+  playSystem(system: StarSystem): boolean {
+    const seed = (Math.random() * 0xffffffff) >>> 0;
+    const level = levelForSystem(system, seed, 6);
+    if (!level) return false;
+    this.startRun(level, true);
+    return true;
   }
 
   destroy(): void {
@@ -325,11 +374,19 @@ export class Engine {
     levelIntro: (level: LevelDef, discovery: boolean, newMission: boolean) => {
       this.audio.setDrone(level.body.kind);
       // The visit is saved straight away, so the catalogue fills even if this sector ends the run.
-      const now = new Date().toISOString();
-      this.store.update((d) => {
-        recordVisit(d.journey, level.identity, level.index, now);
-      });
-      this.awardMilestones(Math.max(this.store.get().records.highestLevel, level.index));
+      const save = this.store.get();
+      const out = this.account(
+        this.progress.dispatch({
+          type: 'sector_enter',
+          index: level.index,
+          identity: level.identity,
+          kind: level.mission.kind,
+          practice: this.run.single,
+          modules: save.modules.equipped.filter((m) => save.modules.levels[m] > 0),
+          hull: save.inventory.equipped.hull,
+        }),
+      );
+      for (const note of out.notes) this.message(note, 'upgrade');
       const rare = level.identity.rarity === 'rare' || level.identity.rarity === 'legendary';
       if (level.mission.boss) this.audio.play('alarm');
       else if (rare) this.audio.play('upgrade');
@@ -349,6 +406,12 @@ export class Engine {
           missionBrief: level.mission.brief,
           boss: level.mission.boss,
           newMission,
+          variant: level.mission.variant,
+          variantNote: VARIANT_INFO[level.mission.variant].note,
+          twists: level.mission.mutators.map((m) => ({ name: MUTATORS[m].name, note: MUTATORS[m].note, color: MUTATORS[m].color })),
+          reward: level.mission.reward,
+          newSystem: out.discovery.system,
+          toBoss: this.run.single || level.mission.boss ? -1 : sectorsToBoss(this.run.seed, level.index + 1) + 1,
         },
       });
     },
@@ -364,44 +427,41 @@ export class Engine {
     died: (cause: string) => this.finishRun(cause),
   };
 
-  /** Save a finished sector straight away: best ranks, shards and bosses survive a later death. */
+  /** Save a finished sector straight away: ranks, credits, statistics and bosses survive a later death. */
   private recordMission(d: MissionDebrief): void {
-    const before = this.store.get();
-    const progressBefore = { shards: before.records.shards, bosses: before.bosses };
-    this.store.update((s) => {
-      s.records.shards += d.shards;
-      if (d.success) {
-        s.records.missionsCompleted += 1;
-        const rec = s.missions[d.kind] ?? { completed: 0, best: '-' as const };
-        s.missions[d.kind] = { completed: rec.completed + 1, best: betterRank(rec.best, d.rank) };
-        if (d.boss && !s.bosses.includes(d.kind)) s.bosses.push(d.kind);
-      }
-    });
-    const after = this.store.get();
-    for (const p of PERMANENTS) {
-      if (!partUnlocked(p, progressBefore) && partUnlocked(p, { shards: after.records.shards, bosses: after.bosses })) {
-        this.runParts.push(p.name);
-        this.message(`SHIP PART UNLOCKED · ${p.name}`, 'upgrade');
-      }
+    const out = this.account(this.progress.dispatch({ type: 'sector_end', debrief: d, practice: this.run.single, distance: this.run.sectorDistance, binary: this.run.multiStar }));
+    // The debrief shows what was actually banked (practice pays half).
+    d.credits = out.credits - out.achievements.reduce((n, a) => n + a.reward, 0);
+    for (const name of out.parts) {
+      this.runParts.push(name);
+      this.message(`SHIP PART UNLOCKED · ${name}`, 'upgrade');
     }
   }
 
-  /** Pay out any milestone that has just been completed. Returns their titles. */
-  private awardMilestones(highestLevel: number): string[] {
-    const save = this.store.get();
-    const fresh = newlyCompleted({ log: save.journey, highestLevel }, save.milestones);
-    if (fresh.length === 0) return [];
-    this.store.update((d) => {
-      for (const m of fresh) {
-        d.milestones.push(m.id);
-        d.credits += m.reward;
-      }
-    });
-    for (const m of fresh) {
-      this.runMilestones.push(m.title);
-      this.message(`MILESTONE · ${m.title}  +${m.reward} CR`, 'upgrade');
+  /** Fold an outcome into the current run's tally and announce anything lasting it earned. */
+  private account(out: Outcome): Outcome {
+    this.runCredits += out.credits;
+    this.runXp += out.xp;
+    this.runLevels.push(...out.levels);
+    this.runCosmetics.push(...out.cosmetics);
+    for (const a of out.achievements) {
+      this.runMilestones.push(a.title);
+      this.message(`ACHIEVEMENT · ${a.title}  +${a.reward} CR`, 'upgrade');
     }
-    return fresh.map((m) => m.title);
+    for (const id of out.synergies) {
+      const syn = SYNERGIES.find((x) => x.id === id);
+      if (syn) this.message(`SYNERGY DISCOVERED · ${syn.name}`, 'upgrade');
+    }
+    if (out.achievements.length > 0 || out.levels.length > 0 || out.cosmetics.length > 0 || out.synergies.length > 0) {
+      this.audio.play('upgrade');
+      this.emit({ type: 'reward', outcome: out });
+    }
+    return out;
+  }
+
+  /** Unlock whatever the save has already earned (first launch after an update or a migration). */
+  settle(): Outcome {
+    return this.account(this.progress.dispatch({ type: 'settle' }));
   }
 
   private openOffer(): void {
@@ -419,45 +479,32 @@ export class Engine {
 
   private finishRun(cause: string): void {
     const run = this.run;
-    const save = this.store.get();
-    const rec = save.records;
+    const rec = this.store.get().records;
     const level = run.levelIndex;
     // Practice sectors do not count towards records and pay half.
     const practice = run.single;
     const finalScore = Math.floor(run.score * run.scoreMul);
     const shards = run.debriefs.reduce((s, d) => s + d.shards, 0);
-    const credits = Math.floor(
-      (run.energy + run.levelsCleared * 6 + Math.floor(finalScore / 1500) + shards * 4) * run.mods.creditMul * (practice ? 0.5 : 1),
-    );
     const newBestScore = !practice && finalScore > rec.bestScore && finalScore > 0;
     const newBestLevel = !practice && level > rec.highestLevel;
     const newBestTime = !practice && run.time > rec.bestTime;
-    const lifetimeEnergy = rec.lifetimeEnergy + run.energy;
-    const highest = practice ? rec.highestLevel : Math.max(rec.highestLevel, level);
-    const unlocked: UpgradeId[] = [];
-    const have = new Set(save.unlocked);
-    for (const id of UPGRADE_ORDER) {
-      const u = UPGRADES[id].unlock;
-      if (!u || have.has(id)) continue;
-      const ok = u.kind === 'level' ? highest >= u.value : lifetimeEnergy >= u.value;
-      if (ok) unlocked.push(id);
-    }
-    this.store.update((d) => {
-      if (!practice) {
-        d.records.bestScore = Math.max(d.records.bestScore, finalScore);
-        d.records.bestTime = Math.max(d.records.bestTime, run.time);
-      }
-      d.records.highestLevel = highest;
-      d.records.totalRuns += 1;
-      d.records.lifetimeEnergy = lifetimeEnergy;
-      d.records.lifetimeTime += run.time;
-      d.records.asteroidsAvoided += run.avoided;
-      d.records.asteroidsDestroyed += run.destroyed;
-      d.credits += credits;
-      d.unlocked = UPGRADE_ORDER.filter((id) => d.unlocked.includes(id) || unlocked.includes(id));
-      d.journey.sectorsCleared += run.levelsCleared;
-    });
-    this.awardMilestones(highest);
+    const levelBefore = levelFor(this.store.get().profile.xp) - this.runLevels.length;
+    const out = this.account(
+      this.progress.dispatch({
+        type: 'run_end',
+        level,
+        time: run.time,
+        score: finalScore,
+        energy: run.energy,
+        avoided: run.avoided,
+        destroyed: run.destroyed,
+        nearMisses: run.nearMisses,
+        sectorsCleared: run.levelsCleared,
+        practice,
+        creditMul: run.mods.creditMul,
+        earnedInRun: this.runCredits,
+      }),
+    );
     const summary: RunSummary = {
       cause,
       level,
@@ -467,11 +514,11 @@ export class Engine {
       avoided: run.avoided,
       destroyed: run.destroyed,
       nearMisses: run.nearMisses,
-      creditsEarned: credits,
+      creditsEarned: this.runCredits,
       newBestScore,
       newBestLevel,
       newBestTime,
-      unlocked,
+      unlocked: out.upgrades,
       upgrades: run.upgradesSummary,
       discoveries: run.visits.filter((v) => v.discovery).map((v) => v.identity.objectName),
       milestones: [...this.runMilestones],
@@ -481,6 +528,11 @@ export class Engine {
       ranks: run.debriefs.map((d) => d.rank),
       partsUnlocked: [...this.runParts],
       scoreMultiplier: run.scoreMul,
+      xp: this.runXp,
+      levelFrom: Math.max(1, levelBefore),
+      levelTo: levelFor(this.store.get().profile.xp),
+      cosmetics: [...this.runCosmetics],
+      distance: Math.round(run.distance),
     };
     this.audio.setThrust(0);
     this.audio.play(practice && run.debriefs.some((d) => d.success) ? 'clear' : 'gameover');
@@ -578,6 +630,9 @@ export class Engine {
     h.hasTemporal = r.mods.temporal > 0;
     h.temporalReady = r.temporalCd <= 0;
     h.combo = r.combo;
+    h.burst = r.burstT > 0 && s.boostCd > 0;
+    h.anchor = r.mods.m.anchorCd > 0 ? clamp(1 - r.anchorCd / r.mods.m.anchorCd, 0, 1) : -1;
+    h.credits = this.runCredits;
     if (h.message && this.realTime - h.message.time > 2.6) h.message = null;
   }
 }

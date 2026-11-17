@@ -6,7 +6,7 @@
 import { PALETTE } from '../config';
 import { bayer, clamp, hexToRgb, TAU } from '../math';
 import { orbitInfo } from '../orbital';
-import type { Mission } from '../missions/runtime';
+import type { Mission, TargetRt } from '../missions/runtime';
 import type { Run } from '../run';
 import { drawText } from './font';
 import { ctx2d, dottedRing, makeCanvas, pixelCircle } from './pixel';
@@ -15,6 +15,9 @@ import type { EnemySprites } from './sprites';
 
 type ToScreen = (w: number) => number;
 type Glow = (radius: number, color: string, intensity: number) => HTMLCanvasElement;
+
+const PAIR_COLORS = ['#b77dff', '#3ef2ff', '#ffc94d', '#ff7a9a'];
+const TARGET_COLOR: Partial<Record<string, string>> = { ore: '#e0a060', convoy: '#8fd3ff', signal: '#fff3a8', scan: '#9fe3ff', relay: '#ffd890' };
 
 export class MissionLayer {
   private hunter: EnemySprites;
@@ -28,6 +31,89 @@ export class MissionLayer {
     this.glow = glow;
     this.hunter = buildEnemySprites('hunter');
     this.sentinel = buildEnemySprites('sentinel');
+  }
+
+  /** Targets of the newer missions: ore rocks, the convoy, a resolved signal, survey points. */
+  private drawNewTarget(ctx: CanvasRenderingContext2D, t: TargetRt, cx: number, cy: number, rp: number, col: string, time: number): void {
+    ctx.globalCompositeOperation = 'lighter';
+    const g = this.glow(t.kind === 'scan' ? 5 : Math.max(4, Math.min(12, rp * 0.5)), col, 0.6);
+    ctx.drawImage(g, cx - (g.width >> 1), cy - (g.height >> 1));
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = col;
+    // Capture / scan field.
+    ctx.globalAlpha = t.kind === 'scan' ? 0.28 : 0.42;
+    dottedRing(ctx, cx, cy, rp, t.kind === 'scan' ? 6 : 4, time * 0.5);
+    ctx.globalAlpha = 1;
+    // Progress arc: scan or cut progress; for the convoy, its remaining hull.
+    if (t.sync > 0) {
+      const steps = Math.ceil(t.sync * 40);
+      ctx.fillStyle = t.kind === 'convoy' ? (t.sync > 0.5 ? PALETTE.green : t.sync > 0.25 ? PALETTE.amber : PALETTE.red) : PALETTE.green;
+      const rr = t.kind === 'scan' ? Math.min(rp, 16) : t.kind === 'convoy' ? 9 : rp + 2;
+      for (let i = 0; i < steps; i++) {
+        const a = -Math.PI / 2 + (i / 40) * TAU;
+        ctx.fillRect(Math.round(cx + Math.cos(a) * rr), Math.round(cy + Math.sin(a) * rr), 1, 1);
+      }
+      ctx.fillStyle = col;
+    }
+    let label = '';
+    switch (t.kind) {
+      case 'ore':
+        // A lumpy rock with a bright vein through it.
+        ctx.fillStyle = '#5a4a3a';
+        ctx.fillRect(cx - 3, cy - 2, 6, 5);
+        ctx.fillRect(cx - 2, cy - 3, 4, 7);
+        ctx.fillStyle = col;
+        ctx.fillRect(cx - 2, cy - 1, 2, 1);
+        ctx.fillRect(cx, cy, 2, 1);
+        ctx.fillRect(cx - 1, cy + 1, 1, 1);
+        if (t.rich && Math.floor(time * 5) % 2 === 0) {
+          ctx.fillStyle = PALETTE.white;
+          ctx.fillRect(cx, cy, 1, 1);
+        }
+        label = t.rich ? 'RICH ORE' : 'ORE';
+        break;
+      case 'convoy': {
+        // The tender: a boxy hull pointing along its orbit, with running lights.
+        const sp = Math.hypot(t.vx, t.vy) || 1;
+        const hx = t.vx / sp;
+        const hy = t.vy / sp;
+        ctx.fillStyle = '#c8d8f0';
+        for (let i = -3; i <= 3; i++) for (let j = -1; j <= 1; j++) ctx.fillRect(Math.round(cx + hx * i - hy * j), Math.round(cy + hy * i + hx * j), 1, 1);
+        ctx.fillStyle = col;
+        ctx.fillRect(Math.round(cx + hx * 4), Math.round(cy + hy * 4), 1, 1);
+        ctx.fillStyle = Math.floor(time * 3) % 2 === 0 ? PALETTE.green : '#1c2240';
+        ctx.fillRect(Math.round(cx - hx * 3 - hy * 2), Math.round(cy - hy * 3 + hx * 2), 1, 1);
+        ctx.fillRect(Math.round(cx - hx * 3 + hy * 2), Math.round(cy - hy * 3 - hx * 2), 1, 1);
+        label = t.label ?? 'TENDER';
+        break;
+      }
+      case 'signal': {
+        const pulse = (time * 1.2) % 1;
+        ctx.globalAlpha = 1 - pulse;
+        pixelCircle(ctx, cx, cy, 3 + pulse * 9);
+        ctx.globalAlpha = 1;
+        ctx.fillRect(cx - 3, cy, 7, 1);
+        ctx.fillRect(cx, cy - 3, 1, 7);
+        ctx.fillStyle = PALETTE.white;
+        ctx.fillRect(cx - 1, cy - 1, 3, 3);
+        label = 'UNLISTED SOURCE';
+        break;
+      }
+      case 'scan': {
+        // Survey brackets around the world itself.
+        const b = 9;
+        for (const [sxn, syn] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as [number, number][]) {
+          ctx.fillRect(cx + sxn * b - (sxn > 0 ? 2 : 0), cy + syn * b, 3, 1);
+          ctx.fillRect(cx + sxn * b, cy + syn * b - (syn > 0 ? 2 : 0), 1, 3);
+        }
+        label = t.label ?? 'SURVEY';
+        break;
+      }
+      default:
+        ctx.fillRect(cx - 1, cy - 1, 3, 3);
+        label = 'RELAY';
+    }
+    drawText(ctx, label, cx, cy - (t.kind === 'scan' ? 16 : Math.min(rp, 14) + 7), col, 'center');
   }
 
   // ------------------------------------------------------------------ under the hazards
@@ -44,6 +130,75 @@ export class MissionLayer {
       dottedRing(ctx, toSx(run.bx), toSy(run.by), r * z, 4, time * 0.15, 2);
       ctx.globalAlpha = 0.8;
       drawText(ctx, label, toSx(run.bx), toSy(run.by - r) - 7, color, 'center');
+      ctx.globalAlpha = 1;
+    }
+
+    // Lanes to hold (resonance lanes): two edge rings and a dusting of points between them.
+    for (const lane of m.lanes()) {
+      const cx = toSx(run.bx);
+      const cy = toSy(run.by);
+      ctx.fillStyle = lane.color;
+      ctx.globalAlpha = lane.alpha * 0.9;
+      dottedRing(ctx, cx, cy, lane.r0 * z, 3, time * 0.2, 1);
+      dottedRing(ctx, cx, cy, lane.r1 * z, 3, -time * 0.2, 1);
+      ctx.globalAlpha = lane.alpha * 0.35;
+      const mid = ((lane.r0 + lane.r1) / 2) * z;
+      for (let i = 0; i < 90; i++) {
+        const a = (i * TAU) / 90 + time * 0.1;
+        const rr = mid + Math.sin(i * 12.9898 + Math.floor(time * 3)) * ((lane.r1 - lane.r0) / 2) * z * 0.8;
+        ctx.fillRect(Math.round(cx + Math.cos(a) * rr), Math.round(cy + Math.sin(a) * rr), 1, 1);
+      }
+      if (lane.label) {
+        ctx.globalAlpha = lane.alpha;
+        drawText(ctx, lane.label, cx, cy - lane.r1 * z - 7, lane.color, 'center');
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // Shaded sectors (the shadow behind a shield world): two edges and a hatch of points inside.
+    for (const w of m.wedges()) {
+      const cx = toSx(w.x);
+      const cy = toSy(w.y);
+      ctx.fillStyle = w.color;
+      for (const side of [-1, 1]) {
+        const a = w.angle + side * w.halfWidth;
+        ctx.globalAlpha = w.alpha * 0.8;
+        for (let r = w.r0; r < w.r1; r += 3) ctx.fillRect(Math.round(cx + Math.cos(a) * r * z), Math.round(cy + Math.sin(a) * r * z), 1, 1);
+      }
+      ctx.globalAlpha = w.alpha * 0.22;
+      for (let r = w.r0 + 4; r < w.r1; r += 7) {
+        const n = Math.max(2, Math.floor((w.halfWidth * 2 * r) / 9));
+        for (let i = 1; i < n; i++) {
+          const a = w.angle - w.halfWidth + (i / n) * w.halfWidth * 2;
+          ctx.fillRect(Math.round(cx + Math.cos(a) * r * z), Math.round(cy + Math.sin(a) * r * z), 1, 1);
+        }
+      }
+      if (w.label) {
+        ctx.globalAlpha = w.alpha;
+        const lr = Math.min(w.r1, w.r0 + 46) * z;
+        drawText(ctx, w.label, cx + Math.cos(w.angle) * lr, cy + Math.sin(w.angle) * lr - 3, w.color, 'center');
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // Links: shield link, mining laser, scan beam, collector tethers, scanned wormhole routes.
+    for (const l of m.links()) {
+      const x1 = toSx(l.x1);
+      const y1 = toSy(l.y1);
+      const x2 = toSx(l.x2);
+      const y2 = toSy(l.y2);
+      const len = Math.max(1, Math.hypot(x2 - x1, y2 - y1));
+      ctx.fillStyle = l.color;
+      ctx.globalAlpha = l.alpha;
+      const step = l.lattice ? 1 : 2;
+      for (let d = 0; d <= len; d += step) {
+        const k = d / len;
+        const wob = l.lattice ? Math.sin(d * 0.7 + time * 9) * 1.6 : 0;
+        const nx = -(y2 - y1) / len;
+        const ny = (x2 - x1) / len;
+        ctx.fillRect(Math.round(x1 + (x2 - x1) * k + nx * wob), Math.round(y1 + (y2 - y1) * k + ny * wob), 1, 1);
+        if (l.lattice) ctx.fillRect(Math.round(x1 + (x2 - x1) * k - nx * wob), Math.round(y1 + (y2 - y1) * k - ny * wob), 1, 1);
+      }
       ctx.globalAlpha = 1;
     }
 
@@ -69,11 +224,14 @@ export class MissionLayer {
       ctx.globalAlpha = 1;
     }
 
-    // Wormholes: two spiral mouths.
-    for (const w of m.wormholes) {
+    // Wormholes: two spiral mouths. With several pairs in a sector, each pair has its own colour
+    // (matching colours link); a lone pair keeps the classic violet entrance and cyan exit.
+    for (let wi = 0; wi < m.wormholes.length; wi++) {
+      const w = m.wormholes[wi];
+      const paired = m.wormholes.length > 1 ? PAIR_COLORS[wi % PAIR_COLORS.length] : null;
       for (const [x, y, col] of [
-        [w.ax, w.ay, PALETTE.violet],
-        [w.bx, w.by, PALETTE.cyan],
+        [w.ax, w.ay, paired ?? PALETTE.violet],
+        [w.bx, w.by, paired ?? PALETTE.cyan],
       ] as [number, number, string][]) {
         const cx = toSx(x);
         const cy = toSy(y);
@@ -150,7 +308,11 @@ export class MissionLayer {
       const cy = toSy(t.y);
       const rp = t.r * z;
       const node = run.level.mission.kind === 'boss_neutron';
-      const base = t.kind === 'dock' ? (node ? PALETTE.cyan : PALETTE.violet) : t.kind === 'gate' ? PALETTE.amber : PALETTE.orange;
+      const base = TARGET_COLOR[t.kind] ?? (t.kind === 'dock' ? (node ? PALETTE.cyan : PALETTE.violet) : t.kind === 'gate' ? PALETTE.amber : PALETTE.orange);
+      if (t.kind === 'ore' || t.kind === 'convoy' || t.kind === 'signal' || t.kind === 'scan' || t.kind === 'relay') {
+        this.drawNewTarget(ctx, t, cx, cy, rp, t.kind === 'ore' && t.rich ? PALETTE.amber : base, time);
+        continue;
+      }
       const col = t.aligned ? PALETTE.green : base;
       ctx.globalCompositeOperation = 'lighter';
       const g = this.glow(Math.max(4, rp * 0.6), col, 0.7);
@@ -210,11 +372,13 @@ export class MissionLayer {
     // Pickups.
     for (const p of m.pickups) {
       if (p.taken) continue;
+      // A supply cache is invisible to a ship without a Deep-Space Scanner.
+      if (p.kind === 'cache' && run.mods.m.deepScan <= 0) continue;
       const cx = toSx(p.x);
       const cy = toSy(p.y + Math.sin(p.bob) * 0.8);
       const blink = Math.floor(time * 4 + p.bob) % 2 === 0;
       ctx.globalCompositeOperation = 'lighter';
-      const col = p.kind === 'shard' ? PALETTE.amber : p.kind === 'fuel' ? PALETTE.orange : p.kind === 'aegis' ? PALETTE.cyan : p.kind === 'repair' ? PALETTE.green : p.kind === 'cell' ? PALETTE.violet : PALETTE.red;
+      const col = p.kind === 'shard' ? PALETTE.amber : p.kind === 'fuel' ? PALETTE.orange : p.kind === 'aegis' ? PALETTE.cyan : p.kind === 'repair' ? PALETTE.green : p.kind === 'cell' ? PALETTE.violet : p.kind === 'cache' ? '#fff3a8' : PALETTE.red;
       const g = this.glow(p.kind === 'charge' ? 9 : 6, col, 1);
       ctx.drawImage(g, cx - (g.width >> 1), cy - (g.height >> 1));
       ctx.globalCompositeOperation = 'source-over';
@@ -249,6 +413,14 @@ export class MissionLayer {
           ctx.fillRect(cx - 2, cy - 1, 5, 3);
           ctx.fillStyle = PALETTE.white;
           ctx.fillRect(cx, cy - 1, 1, 2);
+          break;
+        case 'cache':
+          // A crate: a square with a bright cross-strap, and a label so it reads as a find.
+          ctx.fillRect(cx - 2, cy - 2, 5, 5);
+          ctx.fillStyle = blink ? PALETTE.white : '#c8a040';
+          ctx.fillRect(cx - 2, cy, 5, 1);
+          ctx.fillRect(cx, cy - 2, 1, 5);
+          drawText(ctx, 'CACHE', cx, cy - 10, '#fff3a8', 'center');
           break;
         case 'charge': {
           const r = 3 + (blink ? 1 : 0);

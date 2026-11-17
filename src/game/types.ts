@@ -172,6 +172,11 @@ export interface LevelMechanics {
   waveStrength: number;
   /** Flare frequency multiplier when the 'flares' modifier is active. */
   flareRate: number;
+  /**
+   * Binary systems: the mass-transfer stream between the two stars flares along their axis (both
+   * ways) every `period` seconds. The axis turns with the pair, so the danger sweeps the band.
+   */
+  stream: { period: number; halfWidth: number } | null;
 }
 
 export interface LevelTheme {
@@ -233,6 +238,10 @@ export interface LevelIdentity {
   rarity: Rarity;
   /** One-line plain-language description of the environment. */
   description: string;
+  /** Star system the level is set in (system environments), else undefined. */
+  systemId?: string;
+  /** Names of the real planets present in the sector (system environments). */
+  planets?: string[];
 }
 
 export interface LevelDef {
@@ -412,6 +421,12 @@ export interface HudState {
   combo: number;
   message: HudMessage | null;
   objective: ObjectiveHud;
+  /** True while a Dual-Core second burst is available. */
+  burst: boolean;
+  /** Gravitational Anchor charge 0..1, or -1 when none is fitted. */
+  anchor: number;
+  /** Credits banked so far this run. */
+  credits: number;
 }
 
 export interface UpgradeOffer {
@@ -440,6 +455,16 @@ export interface LevelIntro {
   boss: boolean;
   /** True the first time this mission type is played in this run. */
   newMission: boolean;
+  variant: 'standard' | 'elite' | 'pristine' | 'anomalous';
+  variantNote: string;
+  /** Twists the director added to the sector. */
+  twists: { name: string; note: string; color: string }[];
+  /** Reward multiplier of the sector. */
+  reward: number;
+  /** True when the sector's star system is new to the pilot. */
+  newSystem: boolean;
+  /** Sectors until the next major encounter (-1 = not shown). */
+  toBoss: number;
 }
 
 export interface RunSummary {
@@ -469,6 +494,14 @@ export interface RunSummary {
   /** Ship parts unlocked by this run. */
   partsUnlocked: string[];
   scoreMultiplier: number;
+  /** Experience earned, and the pilot level before and after. */
+  xp: number;
+  levelFrom: number;
+  levelTo: number;
+  /** Cosmetics granted during the run. */
+  cosmetics: string[];
+  /** World units flown. */
+  distance: number;
 }
 
 export type SfxName =

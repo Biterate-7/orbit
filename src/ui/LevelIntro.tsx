@@ -27,7 +27,9 @@ export function LevelIntroCard({ intro, onDone }: Props) {
       {intro.boss && <div className="boss-warn">WARNING // MAJOR ENCOUNTER</div>}
       <div className="mission-tag">
         {intro.newMission && !intro.boss && <span className="new-mission">NEW MISSION</span>}
+        {intro.variant !== 'standard' && <span className={`variant-tag ${intro.variant}`}>{intro.variant.toUpperCase()}</span>}
         <span className="mission-name">{intro.missionTitle}</span>
+        {intro.reward !== 1 && <span className="reward-tag">PAYS x{intro.reward.toFixed(2)}</span>}
       </div>
       <div className="cls">
         {rare && <span className="rare-tag">{id.rarity === 'legendary' ? 'ANOMALOUS ENCOUNTER' : 'RARE ENCOUNTER'} // </span>}
@@ -39,6 +41,16 @@ export function LevelIntroCard({ intro, onDone }: Props) {
       <div className="line" />
       <div className="brief">{intro.missionBrief}</div>
       <div className="tag">{intro.tagline}</div>
+      {(intro.twists.length > 0 || intro.variantNote) && (
+        <div className="twists">
+          {intro.variantNote && <span className="twist variant">{intro.variantNote}</span>}
+          {intro.twists.map((t) => (
+            <span key={t.name} className="twist" style={{ '--twist': t.color } as CSSProperties}>
+              <b>{t.name}</b> {t.note}
+            </span>
+          ))}
+        </div>
+      )}
       {/* What this sector is about: the object, where the data comes from, and how it orbits. */}
       <div className="ident">
         <span className={`badge ${KIND_CLASS[id.kind]}`}>{id.kind}</span>
@@ -46,6 +58,8 @@ export function LevelIntroCard({ intro, onDone }: Props) {
           {id.objectName} · {id.objectClass.toUpperCase()}
         </span>
         <span className="orb">{id.orbitLabel}</span>
+        {intro.newSystem && <span className="badge real">NEW SYSTEM</span>}
+        {intro.toBoss > 0 && intro.toBoss <= 2 && <span className="orb warn">{intro.toBoss === 1 ? 'MAJOR ENCOUNTER NEXT' : 'MAJOR ENCOUNTER CLOSE'}</span>}
       </div>
       {intro.newMechanics.length > 0 && (
         <div className="new">

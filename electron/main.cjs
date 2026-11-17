@@ -7,7 +7,7 @@
 //     stable origin for localStorage saves and a strict Content-Security-Policy header;
 //   - navigation, pop-ups, webviews and permission prompts are all refused (the game needs none).
 
-const { app, BrowserWindow, Menu, protocol, session } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, net, protocol, session } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
@@ -17,7 +17,9 @@ const HOST = 'lost-orbit';
 const START_URL = `${SCHEME}://${HOST}/index.html`;
 const RENDERER_DIR = path.resolve(__dirname, '..', 'dist');
 
-// The game makes no network requests: sprites, audio and fonts are generated or bundled.
+// The page itself makes no network requests: sprites, audio, fonts and the astronomical snapshot
+// are generated or bundled, so connect-src stays 'self'. Optional live catalogue imports are made
+// by this process on the page's behalf (see ASTRO_UPSTREAMS below), never by the page.
 // 'unsafe-inline' styles are needed for React style={...} attributes.
 const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
@@ -102,6 +104,41 @@ function isAppUrl(rawUrl) {
     return false;
   }
 }
+
+// ---- live astronomical imports -------------------------------------------------------------
+// The in-game catalogue can pull extra records from NASA / JPL when the player asks for it. Those
+// services send no CORS headers, so the fetch happens here. The page can only name one of these
+// three upstreams and supply a query string; it can never make this process fetch another URL.
+const ASTRO_UPSTREAMS = {
+  exo: 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync',
+  sbdb: 'https://ssd-api.jpl.nasa.gov/sbdb.api',
+  horizons: 'https://ssd.jpl.nasa.gov/api/horizons.api',
+};
+const ASTRO_TIMEOUT_MS = 25000;
+let astroLast = 0;
+
+async function astroFetch(event, upstream, query) {
+  if (!event.senderFrame || !isAppUrl(event.senderFrame.url)) return { ok: false, status: 0, body: '' };
+  const base = Object.prototype.hasOwnProperty.call(ASTRO_UPSTREAMS, upstream) ? ASTRO_UPSTREAMS[upstream] : null;
+  if (!base || typeof query !== 'string' || query.length === 0 || query.length > 4000 || /[\r\n#]/.test(query)) {
+    return { ok: false, status: 400, body: '' };
+  }
+  // At most one request a second, whatever the page asks for.
+  const wait = astroLast + 1000 - Date.now();
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  astroLast = Date.now();
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ASTRO_TIMEOUT_MS);
+  try {
+    const res = await net.fetch(`${base}?${query}`, { method: 'GET', signal: ctl.signal, headers: { Accept: 'application/json' } });
+    return { ok: res.ok, status: res.status, body: await res.text() };
+  } catch {
+    return { ok: false, status: 0, body: '' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+ipcMain.handle('lost-orbit:astro-fetch', astroFetch);
 
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
