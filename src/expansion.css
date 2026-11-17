@@ -56,15 +56,29 @@
 }
 
 /* ------------------------------------------------------------------ main menu */
+/* The menu scene parks its planet at 70% of the width, vertically centred, with the demo ship
+   orbiting at roughly 0.27 x the short side (renderer.ts, menu camera). So the right-hand middle
+   of the screen belongs to the animation; the menu column takes the left and the pilot dock sits
+   in the bottom-right corner, in the band under the orbit, like the in-game HUD's corner readouts.
+   The controls hint shares the dock's baseline in the bottom-left. */
 .menu.menu2 {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-rows: 1fr auto;
-  column-gap: 48px;
-  align-items: center;
+  --menu-x: clamp(var(--gutter), 7vw, 120px);
+  --dock-x: clamp(var(--gutter), 3.5vw, 48px);
+  --dock-y: calc(clamp(16px, 3.5vh, 28px) + var(--safe-b));
+  --dock-w: 528px;
+  /* Keep the centred column clear of the hint along the bottom edge. */
+  padding-bottom: calc(60px + var(--safe-b));
 }
-.menu-main {
+.menu2 .menu-main {
   min-width: 0;
+  align-self: flex-start;
+  max-width: 100%;
+}
+/* The divider spans the links it heads, not the title, so it stops short of the orbit and the dock. */
+.menu2 .menu-minor {
+  width: max-content;
+  max-width: 100%;
+  padding-right: 32px;
 }
 .menu2 .menu-list .btn .credits-chip {
   font-size: 8px;
@@ -85,33 +99,89 @@
   border-top: 2px solid var(--line);
 }
 .menu2 .menu-footer {
-  grid-column: 1 / -1;
+  left: var(--menu-x);
+  right: calc(var(--dock-x) + var(--dock-w) + 24px);
+  bottom: var(--dock-y);
+  text-align: left;
+  line-height: 1.1;
 }
+
+/* Pilot dock: ship | name, rank and XP over a row of four readouts. */
 .pilot-card {
-  width: 268px;
-  padding: 14px;
+  position: absolute;
+  right: var(--dock-x);
+  bottom: var(--dock-y);
+  width: var(--dock-w);
+  max-width: calc(100% - 2 * var(--dock-x));
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    'ship head'
+    'ship xp'
+    'ship stats';
+  align-items: center;
+  column-gap: 14px;
+  row-gap: 4px;
+  padding: 8px 14px 8px 8px;
   background: var(--panel);
   border: 2px solid var(--line-bright);
   box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.6), inset 0 2px 0 var(--rar);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+}
+/* HUD corner ticks over the frame, the same brackets the panels wear. */
+.pilot-card::before,
+.pilot-card::after {
+  content: '';
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  pointer-events: none;
+}
+.pilot-card::before {
+  top: -2px;
+  left: -2px;
+  border-top: 2px solid var(--cyan);
+  border-left: 2px solid var(--cyan);
+}
+.pilot-card::after {
+  bottom: -2px;
+  right: -2px;
+  border-bottom: 2px solid var(--cyan);
+  border-right: 2px solid var(--cyan);
 }
 .pilot-ship {
+  grid-area: ship;
+  align-self: stretch;
   display: flex;
+  align-items: center;
   justify-content: center;
+  padding: 0 2px;
   background:
     radial-gradient(ellipse at 50% 50%, rgba(62, 242, 255, 0.07), transparent 70%),
     repeating-linear-gradient(0deg, transparent 0 11px, rgba(44, 58, 120, 0.35) 11px 12px),
     repeating-linear-gradient(90deg, transparent 0 11px, rgba(44, 58, 120, 0.35) 11px 12px);
   border: 2px solid var(--line);
-  margin-bottom: 6px;
+}
+.pilot-head {
+  grid-area: head;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
 }
 .pilot-name {
   font-family: var(--pixel);
   font-size: 16px;
+  line-height: 1;
   letter-spacing: 2px;
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pilot-rank {
+  flex-shrink: 0;
+  color: var(--cyan);
 }
 .xp {
   display: flex;
@@ -122,32 +192,84 @@
 .xp .mile-bar {
   flex: 1;
 }
+.pilot-card .xp {
+  grid-area: xp;
+  margin: 0;
+}
+.pilot-card .xp .mile-bar {
+  margin: 0;
+}
 .pilot-stats {
+  grid-area: stats;
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px 12px;
-  padding-top: 8px;
+  grid-template-columns: repeat(4, auto);
+  justify-content: space-between;
+  gap: 4px 16px;
+  margin-top: 1px;
+  padding-top: 5px;
   border-top: 2px solid var(--line);
 }
 .pilot-stats .value {
   font-family: var(--term);
   font-size: 24px;
   line-height: 1;
+  margin-top: 2px;
   color: var(--cyan);
 }
-@media (max-width: 900px), (max-height: 560px) {
+
+/* Shorter screens: tighten the column so it stays centred above the bottom edge. */
+@media (max-height: 680px) and (min-height: 561px) {
+  .menu2 .tagline {
+    margin-bottom: 26px;
+  }
+  .menu2.menu .menu-list {
+    margin-bottom: 24px;
+  }
+}
+
+/* Narrower desktops: the ship thumbnail goes first, so the dock never reaches the column. */
+@media (max-width: 1140px) {
   .menu.menu2 {
-    grid-template-columns: 1fr;
-    align-items: start;
-    overflow-y: auto;
+    --dock-w: 420px;
   }
   .pilot-card {
-    width: 100%;
-    max-width: 420px;
-    margin-top: 14px;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'head' 'xp' 'stats';
   }
   .pilot-ship {
     display: none;
+  }
+}
+
+/* Small and short screens: one scrolling column, the dock docked under it at full width. */
+@media (max-width: 900px), (max-height: 560px) {
+  .menu.menu2 {
+    justify-content: flex-start;
+    overflow-y: auto;
+    padding-bottom: calc(20px + var(--safe-b));
+  }
+  .menu2 .menu-main {
+    margin-top: auto;
+    margin-bottom: 18px;
+  }
+  .pilot-card {
+    position: relative;
+    right: auto;
+    bottom: auto;
+    flex-shrink: 0;
+    width: 100%;
+    max-width: 520px;
+    margin-top: auto;
+  }
+  .menu2 .menu-footer {
+    position: static;
+    margin-top: 12px;
+  }
+}
+@media (max-width: 480px) {
+  .pilot-stats {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 12px;
   }
 }
 
