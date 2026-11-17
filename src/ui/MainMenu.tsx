@@ -31,7 +31,7 @@ interface Props {
 
 /**
  * The front door. One column of destinations, each with the one number that matters about it,
- * and the pilot's card - their ship as fitted, level and balance - beside it.
+ * and the pilot's dock - their ship as fitted, level and balance - in the bottom-right corner.
  */
 export function MainMenu({ save, onPlay, onUpgrades, onMissions, onModifiers, onCatalogue, onHangar, onShop, onProfile, systemCount, onHowTo, onSettings, sfx }: Props) {
   const ref = useRef<HTMLDivElement>(null);
@@ -111,13 +111,16 @@ export function MainMenu({ save, onPlay, onUpgrades, onMissions, onModifiers, on
         </nav>
       </div>
 
+      {/* A HUD dock in the bottom-right corner, clear of the orbit the menu scene flies around. */}
       <aside className="pilot-card" style={{ '--rar': RARITY_COLOR[look.rarity] } as CSSProperties} aria-label="Pilot">
         <div className="pilot-ship">
-          <ShipPreview look={look} width={78} height={48} scale={3} reduced={save.settings.reducedEffects} label="Your ship" />
+          <ShipPreview look={look} width={48} height={36} scale={2} reduced={save.settings.reducedEffects} label="Your ship" />
         </div>
-        <div className="pilot-name">{save.profile.name}</div>
-        <div className="label">
-          {rankTitle(lv.level)} · LEVEL {lv.level}
+        <div className="pilot-head">
+          <div className="pilot-name">{save.profile.name}</div>
+          <div className="label pilot-rank">
+            {rankTitle(lv.level)} · LEVEL {lv.level}
+          </div>
         </div>
         <div className="xp">
           <span className="mile-bar">
