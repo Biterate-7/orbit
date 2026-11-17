@@ -92,12 +92,15 @@ export function Hud({ engine, touch, showHint, onPause }: Props) {
         if (boost.current) boost.current.className = `hud-boost${h.boostReady ? ' ready' : ''}`;
         if (boostState.current) boostState.current.textContent = h.boostReady ? 'READY' : `${bc}%`;
       }
-      const flagKey = `${h.shield}|${Math.ceil(h.overdrive)}|${h.hasTemporal ? (h.temporalReady ? 1 : 2) : 0}`;
+      const flagKey = `${h.shield}|${Math.ceil(h.overdrive)}|${h.hasTemporal ? (h.temporalReady ? 1 : 2) : 0}|${h.burst ? 1 : 0}|${h.anchor < 0 ? -1 : h.anchor >= 1 ? 1 : 0}|${h.credits}`;
       if (changed('flags', flagKey) && flags.current) {
         const parts: string[] = [];
         if (h.shield > 0) parts.push(`<span class="shield">SHIELD${'<i class="pip"></i>'.repeat(h.shield)}</span>`);
         if (h.overdrive > 0) parts.push(`<span class="od">OVERDRIVE ${Math.ceil(h.overdrive)}s</span>`);
         if (h.hasTemporal) parts.push(`<span class="tf">${h.temporalReady ? 'TEMPORAL READY' : 'TEMPORAL ...'}</span>`);
+        if (h.burst) parts.push('<span class="od">SECOND BURST</span>');
+        if (h.anchor >= 0) parts.push(`<span class="${h.anchor >= 1 ? 'anchor' : 'anchor off'}">${h.anchor >= 1 ? 'ANCHOR READY' : 'ANCHOR ...'}</span>`);
+        if (h.credits > 0) parts.push(`<span class="cr">+${h.credits} CR</span>`);
         flags.current.innerHTML = parts.join('');
       }
       const m = h.message;

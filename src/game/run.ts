@@ -21,6 +21,9 @@ import { placeAttractors, seasonIntensity } from './rails';
 import { UPGRADES, UPGRADE_ORDER, computeMods, emptyStacks } from './upgrades';
 import type { RunMods, Stacks } from './upgrades';
 import type { SaveData } from './persistence';
+import type { ModuleLoadout } from './modules';
+import type { ShipLook } from './cosmetics/catalog';
+import type { DirectorContext } from '../generation/missionDirector';
 import type {
   BeamState,
   BeltSpec,
@@ -126,6 +129,12 @@ export interface RunOptions {
   modifiers?: RunModifierId[];
   /** Play only this one sector, then end the run (mission practice). */
   single?: boolean;
+  /** Ship modules fitted for this run. */
+  modules?: ModuleLoadout | null;
+  /** Cosmetic loadout (exhaust particles are spawned by the simulation; nothing else here reads it). */
+  look?: ShipLook | null;
+  /** What the mission director should know about the pilot beyond this run. */
+  director?: DirectorContext;
 }
 
 /**
@@ -218,6 +227,17 @@ export class Run {
   inDrag = false;
   private mechMessages = new Set<string>();
   readonly noSpawns: boolean;
+  readonly look: ShipLook | null;
+  private readonly modules: ModuleLoadout | null;
+  private readonly director: DirectorContext | undefined;
+  /** World units flown this run / this sector. */
+  distance = 0;
+  sectorDistance = 0;
+  /** Seconds until the Gravitational Anchor can absorb another wave. */
+  anchorCd = 0;
+  /** Seconds of the Dual-Core second-burst window left. */
+  burstT = 0;
+  private nextStream = 0;
 
   // ---- journey
   private history: RunHistory = { environments: [], objects: [], sinceRare: 0 };
@@ -226,6 +246,8 @@ export class Run {
   readonly visits: Visit[] = [];
 
   score = 0;
+  /** Credits paid by the sectors of this run so far. */
+  creditsEarned = 0;
   energy = 0;
   avoided = 0;
   destroyed = 0;
@@ -281,7 +303,10 @@ export class Run {
       ? { ...opts.save.permanent }
       : { thrusters: 0, hull: 0, collector: 0, shields: 0, reactor: 0, tanks: 0, tractor: 0, heatshield: 0, gyro: 0, phase: 0 };
     this.unlocked = new Set(opts.save?.unlocked ?? []);
-    this.mods = computeMods(this.stacks, this.perm);
+    this.modules = this.demo ? null : (opts.modules ?? null);
+    this.look = opts.look ?? null;
+    this.director = opts.director;
+    this.mods = computeMods(this.stacks, this.perm, this.modules);
     this.particles = new Particles(700);
     this.particles.limit = this.reducedEffects ? 260 : 700;
     this.modifiers = new Set(this.demo ? [] : (opts.modifiers ?? []));
@@ -317,6 +342,7 @@ export class Run {
       this.history,
       { discovered: this.discovered, environmentsSeen: this.environmentsSeen },
       this.seenMods,
+      this.director,
     );
     this.history = recordEncounter(this.history, encounter, level.identity.objectId, mission.kind);
     return level;
@@ -388,6 +414,9 @@ export class Run {
     this.pingR = 0;
     this.nextPing = 1.5;
     this.inDrag = false;
+    this.sectorDistance = 0;
+    this.burstT = 0;
+    this.nextStream = M.stream ? M.stream.period * 0.7 : 0;
     const d = L.difficulty;
     this.nextAsteroid = 0.6;
     this.nextFlare = this.rng.range(2.5, 4);
@@ -697,6 +726,8 @@ export class Run {
     // Surviving a rare encounter is worth more; so is flying it well (the rank multiplier).
     const bonus = Math.round(report.score * (rarity === 'legendary' ? 2 : rarity === 'rare' ? 1.5 : 1));
     report.score = bonus;
+    report.credits = Math.round(report.credits * (rarity === 'legendary' ? 1.5 : rarity === 'rare' ? 1.25 : 1));
+    this.creditsEarned += report.credits;
     this.score += bonus;
     this.debriefs.push(report);
     if (report.success && report.boss && !this.bossesDefeated.includes(report.kind)) this.bossesDefeated.push(report.kind);
@@ -717,7 +748,7 @@ export class Run {
   /** The jump window closed with the objective unmet: the drive fires anyway and the hull pays. */
   private forcedJump(): void {
     const s = this.ship;
-    this.sink.message('JUMP WINDOW CLOSED · FORCED JUMP · HULL STRESS', 'danger');
+    this.sink.message(`${this.mission.failure || 'JUMP WINDOW CLOSED'} · FORCED JUMP · HULL STRESS`, 'danger');
     this.sink.sfx('critical');
     this.shake = Math.max(this.shake, 6);
     this.hurtFlash = 1;
@@ -748,7 +779,12 @@ export class Run {
     const dying = this.phase === 'dying';
 
     if (s.invuln > 0) s.invuln -= dt;
-    if (s.boostT > 0) s.boostT -= dt;
+    if (s.boostT > 0) {
+      s.boostT -= dt;
+      if (s.boostT <= 0 && this.mods.m.phaseLevel >= 3 && !this.demo) this.phaseShock();
+    }
+    if (this.burstT > 0) this.burstT -= dt;
+    if (this.anchorCd > 0) this.anchorCd -= dt * (this.mods.m.syn.has('harmonics') && this.multiStar ? 2 : 1);
     if (s.boostCd > 0) s.boostCd -= dt * (this.overdrive > 0 ? 2.5 : 1);
     if (this.overdrive > 0) {
       this.overdrive -= dt;
@@ -797,7 +833,7 @@ export class Run {
         ex += -py * lat * lt;
         ey += px * lat * lt;
       }
-      if (c.boost && s.boostCd <= 0) this.boost(t, lat, px, py);
+      if (c.boost && (s.boostCd <= 0 || this.burstT > 0)) this.boost(t, lat, px, py);
       // Auto-circularising would fight a transfer orbit, so it only works while holding a band.
       if (this.mods.stabilizer > 0 && L.mission.orbitRule === 'band') {
         const r = Math.hypot(s.x, s.y) || 1;
@@ -813,7 +849,7 @@ export class Run {
     s.lateral = lat;
 
     if (this.storm.state === 'active') {
-      const w = this.storm.strength * (1 - 0.15 * this.mods.stabilizer);
+      const w = this.storm.strength * (1 - 0.15 * this.mods.stabilizer) * this.mods.m.disturbMul;
       ex += this.storm.dirX * w;
       ey += this.storm.dirY * w;
     }
@@ -845,13 +881,13 @@ export class Run {
       // Stellar wind: outward radiation pressure, surging in gusts.
       if (M.wind) {
         const g = Math.max(0, Math.sin((TAU * this.simTime) / M.wind.period));
-        this.windNow = M.wind.base + M.wind.gust * g * g;
+        this.windNow = (M.wind.base + M.wind.gust * g * g) * this.mods.m.disturbMul;
         ex += (relX / relR) * this.windNow;
         ey += (relY / relR) * this.windNow;
       }
       // Cryo-plume: a shove straight outward while the ship is inside the jet.
       if (M.plume && relR > L.body.radius && inWedge(relX, relY, this.plumeAngle, M.plume.halfWidth, M.plume.reach)) {
-        const kick = M.plume.kick * (1 + 0.6 * this.seasonK) * (1 - 0.15 * this.mods.stabilizer);
+        const kick = M.plume.kick * (1 + 0.6 * this.seasonK) * (1 - 0.15 * this.mods.stabilizer) * this.mods.m.disturbMul;
         ex += (relX / relR) * kick;
         ey += (relY / relR) * kick;
         this.note('plume', 'INSIDE THE PLUME', 'info');
@@ -859,6 +895,11 @@ export class Run {
     }
 
     leapfrogStep(s, dt, this.attractors, 1, ex, ey);
+    if (!this.demo && this.playing) {
+      const moved = Math.hypot(s.vx, s.vy) * dt;
+      this.distance += moved;
+      this.sectorDistance += moved;
+    }
     s.updateHeading(dt, dying);
     s.pushTrail();
 
@@ -880,6 +921,8 @@ export class Run {
       for (let i = 0; i < L.companions.length; i++) {
         const c = L.companions[i];
         const m = this.attractors[i + 1];
+        // A Phase Drive carries the ship straight through a moon or planet while it is phased.
+        if (s.boostT > 0 && this.mods.m.phaseLevel >= 1 && c.kind !== 'star') continue;
         if (m && circlesOverlap(s.x, s.y, s.radius * 0.6, m.x, m.y, c.radius)) {
           const what = c.kind === 'star' ? 'INCINERATED BY THE COMPANION STAR' : `CRASHED INTO ${c.name ?? (c.kind === 'planet' ? 'THE PLANET' : 'THE MOON')}`;
           this.kill(what, c.kind === 'star' ? 'consumed' : 'explode');
@@ -955,7 +998,7 @@ export class Run {
         arena: L.mission.arena,
       });
       let rate = res.rate;
-      if (rate < 0) rate *= L.stabilityDrain;
+      if (rate < 0) rate *= L.stabilityDrain * this.mods.m.stabilityDrainMul * (this.mods.m.syn.has('harmonics') && this.multiStar ? 0.6 : 1);
       if (this.phase === 'intro' && rate < 0) rate = 0;
       s.stability = clamp(s.stability + rate * dt, 0, 100);
       this.stabilityReason = res.reason ?? (this.inDrag ? 'DRAG' : null);
@@ -986,7 +1029,14 @@ export class Run {
 
   private emitThrust(t: number, lat: number): void {
     const s = this.ship;
-    if (Math.random() < (this.reducedEffects ? 0.35 : 0.75)) {
+    // Exhaust particles take their colours and behaviour from the fitted particle cosmetic.
+    const pl = this.look?.particles;
+    const style = pl?.style ?? 'standard';
+    const lifeMul = { standard: 1, embers: 1.8, ions: 0.6, frost: 2, pixels: 1.2, plasma: 1.4, stardust: 2.2, singularity: 1.5 }[style];
+    const speedMul = { standard: 1, embers: 0.5, ions: 1.5, frost: 0.4, pixels: 0.9, plasma: 0.7, stardust: 0.6, singularity: -0.35 }[style];
+    const sizeOf = style === 'plasma' ? 2 : 1;
+    const flagsOf = style === 'pixels' || style === 'frost' ? P_SPARK : P_GLOW;
+    if (Math.random() < (this.reducedEffects ? 0.35 : 0.75) * (pl?.rate ?? 1)) {
       const hx = Math.cos(s.heading);
       const hy = Math.sin(s.heading);
       const od = this.overdrive > 0;
@@ -1000,14 +1050,14 @@ export class Run {
         this.particles.spawn(
           bx,
           by,
-          s.vx * 0.6 + dx * spd,
-          s.vy * 0.6 + dy * spd,
-          this.fx.range(0.2, 0.42),
-          od ? '#ffc94d' : this.fx.chance(0.5) ? '#ff8a3d' : '#ffc94d',
-          1,
+          s.vx * 0.6 + dx * spd * speedMul,
+          s.vy * 0.6 + dy * spd * speedMul,
+          this.fx.range(0.2, 0.42) * lifeMul,
+          od ? '#ffc94d' : this.fx.chance(0.5) ? (pl?.colors[0] ?? '#ff8a3d') : (pl?.colors[1] ?? '#ffc94d'),
+          sizeOf,
           2.5,
-          P_GLOW,
-          od ? '#ff4d5e' : '#9b5cff',
+          flagsOf,
+          od ? '#ff4d5e' : pl ? pl.colors[1] : '#9b5cff',
         );
       } else if (t < 0) {
         const bx = s.x + hx * 5;
@@ -1028,8 +1078,14 @@ export class Run {
 
   private boost(t: number, lat: number, px: number, py: number): void {
     const s = this.ship;
-    s.boostT = CONFIG.BOOST_TIME * this.mods.boostTimeMul;
-    s.boostCd = s.boostCdMax;
+    // Dual-Core Thrusters: a second burst inside the window, before the cooldown has run.
+    const second = s.boostCd > 0 && this.burstT > 0;
+    s.boostT = CONFIG.BOOST_TIME * this.mods.boostTimeMul * (second && !this.mods.m.syn.has('phasedash') ? 0.5 : 1);
+    if (second) this.burstT = 0;
+    else {
+      s.boostCd = s.boostCdMax;
+      this.burstT = this.mods.m.burstWindow;
+    }
     const dv = CONFIG.BOOST_DV * this.mods.boostDvMul;
     let dx = px;
     let dy = py;
@@ -1207,6 +1263,15 @@ export class Run {
       }
     }
 
+    if (M.stream && !this.demo) {
+      // The stream keeps its own beat whatever the mission does to the ambient traffic.
+      this.nextStream -= realDt;
+      if (this.nextStream <= 0) {
+        this.spawnStream();
+        this.nextStream = M.stream.period * this.rng.range(0.9, 1.1);
+      }
+    }
+
     if (mods.has('flares')) {
       this.nextFlare -= dt;
       if (this.nextFlare <= 0) {
@@ -1363,6 +1428,46 @@ export class Run {
       this.flareMessages++;
     }
     this.sink.sfx('warning');
+  }
+
+  /** Binary systems: the mass-transfer stream flares along the axis joining the two stars, both ways. */
+  private spawnStream(): void {
+    const L = this.level;
+    const st = L.mechanics.stream;
+    const i = L.companions.findIndex((c) => c.kind === 'star');
+    const m = this.attractors[i + 1];
+    if (!st || i < 0 || !m) return;
+    const telegraph = 1.8;
+    // Aim where the axis will be when the flare fires: it turns with the pair.
+    const axis = Math.atan2(m.y - this.by, m.x - this.bx) + (TAU / L.companions[i].period) * telegraph;
+    const reach = L.safeMin + 0.55 * (L.safeMax - L.safeMin);
+    for (const angle of [axis, axis + Math.PI]) this.flares.push({ angle, t: 0, telegraph, active: 1, reach, halfWidth: st.halfWidth, hit: false });
+    this.note('stream', 'MASS-TRANSFER STREAM · CLEAR THE AXIS OF THE TWO STARS', 'warn');
+    this.sink.sfx('warning');
+  }
+
+  /** A telegraphed flare wedge from the primary, for missions that script their own. */
+  spawnFlareAt(angle: number, halfWidth: number, reach: number, telegraph: number, active: number): void {
+    this.flares.push({ angle, t: 0, telegraph, active, reach, halfWidth, hit: false });
+  }
+
+  /** True when the sector has more than one star (binary primaries or a companion star). */
+  get multiStar(): boolean {
+    return this.level.body.orbit !== null || this.level.companions.some((c) => c.kind === 'star');
+  }
+
+  /** Phase Drive, level 3: dropping out of phase throws a shock that clears loose rock nearby. */
+  private phaseShock(): void {
+    const s = this.ship;
+    let cleared = 0;
+    for (const h of this.hazards) {
+      if (!h.alive || Math.hypot(h.x - s.x, h.y - s.y) > 30) continue;
+      this.destroyHazard(h, 'env');
+      h.alive = false;
+      cleared++;
+    }
+    if (cleared > 0) this.hazards = this.hazards.filter((h) => h.alive);
+    this.rings.push({ x: s.x, y: s.y, r: 4, maxR: 30, t: 0, dur: 0.4, color: '#b8a4ff' });
   }
 
   // ------------------------------------------------------------------ environment
@@ -1563,11 +1668,21 @@ export class Run {
       if (!w.shipHit && s.visible && !this.demo && prevR <= sr && w.r > sr) {
         w.shipHit = true;
         if (s.boostT <= 0 && this.phase === 'active') {
-          const k = w.strength * (1 - 0.2 * this.mods.stabilizer);
-          s.vx += (s.x / sr) * k;
-          s.vy += (s.y / sr) * k;
-          this.shake = Math.max(this.shake, 2);
-          s.stability = Math.max(0, s.stability - 4);
+          if (this.mods.m.anchorCd > 0 && this.anchorCd <= 0) {
+            // Gravitational Anchor: the wave passes and the orbit does not move.
+            this.anchorCd = this.mods.m.anchorCd;
+            this.rings.push({ x: s.x, y: s.y, r: 5, maxR: 26, t: 0, dur: 0.5, color: '#7dffd8' });
+            this.addText(s.x, s.y - 12, 'ANCHORED', '#7dffd8');
+            this.sink.sfx('shield');
+            this.note('anchor', 'GRAVITATIONAL ANCHOR · WAVE ABSORBED', 'good');
+          } else {
+            const k = w.strength * (1 - 0.2 * this.mods.stabilizer) * this.mods.m.disturbMul;
+            s.vx += (s.x / sr) * k;
+            s.vy += (s.y / sr) * k;
+            this.shake = Math.max(this.shake, 2);
+            s.stability = Math.max(0, s.stability - 4);
+            this.mission?.onWave();
+          }
         }
       }
       for (const h of this.hazards) {
@@ -1853,8 +1968,10 @@ export class Run {
         this.hazards.push(c);
       }
     }
-    if ((how === 'ram' || how === 'shield') && this.rng.chance(0.6)) {
-      this.spawnMoteAt(h.x, h.y, h.size === 2 ? 3 : 1);
+    const drill = this.mods.m.level.drill;
+    if ((how === 'ram' || how === 'shield') && (drill > 0 || this.rng.chance(0.6))) {
+      // The Resonance Drill makes rammed rock always shed its energy.
+      this.spawnMoteAt(h.x, h.y, (h.size === 2 ? 3 : 1) * (drill >= 3 ? 2 : 1) * (drill > 0 && this.mods.m.syn.has('deepvein') ? 2 : 1));
     }
     if (how === 'ram' || how === 'shield') this.shake = Math.max(this.shake, 2.5);
   }
@@ -2068,7 +2185,7 @@ export class Run {
   applyUpgrade(id: UpgradeId): void {
     this.pendingUpgrades = Math.max(0, this.pendingUpgrades - 1);
     this.stacks[id]++;
-    this.mods = computeMods(this.stacks, this.perm);
+    this.mods = computeMods(this.stacks, this.perm, this.modules);
     const s = this.ship;
     s.boostCdMax = CONFIG.BOOST_COOLDOWN * this.mods.boostCdMul;
     switch (id) {

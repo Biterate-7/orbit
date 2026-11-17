@@ -1,3 +1,4 @@
+import { cosmetic } from '../game/cosmetics/catalog';
 import { useEffect, useRef, useState } from 'react';
 import { formatTime, padScore } from '../game/math';
 import type { RunSummary, SfxName } from '../game/types';
@@ -64,6 +65,8 @@ export function GameOver({ summary, practice = false, onRetry, onMenu, sfx }: Pr
     { k: 'NEAR MISSES', v: String(summary.nearMisses) },
     { k: 'ENERGY COLLECTED', v: String(summary.energy) },
     { k: 'OBJECTS CATALOGUED', v: summary.discoveries.length > 0 ? `+${summary.discoveries.length}` : '0', badge: summary.discoveries.length > 0 ? 'NEW' : undefined },
+    { k: 'DISTANCE FLOWN', v: `${summary.distance.toLocaleString('en-US')} UNITS` },
+    { k: 'EXPERIENCE', v: `+${summary.xp} XP`, badge: summary.levelTo > summary.levelFrom ? `LEVEL ${summary.levelTo}` : undefined },
     { k: 'CREDITS EARNED', v: `+${summary.creditsEarned} CR`, amber: true },
   ];
 
@@ -101,14 +104,20 @@ export function GameOver({ summary, practice = false, onRetry, onMenu, sfx }: Pr
         )}
         {summary.milestones.length > 0 && (
           <div className="unlock-note">
-            <span className="label">MILESTONE REACHED</span>
+            <span className="label">ACHIEVEMENT UNLOCKED</span>
             {summary.milestones.join(' · ')}
           </div>
         )}
         {summary.partsUnlocked.length > 0 && (
           <div className="unlock-note">
             <span className="label">SHIP PART UNLOCKED</span>
-            {summary.partsUnlocked.join(' · ')} can now be bought in the hangar.
+            {summary.partsUnlocked.join(' · ')} can now be bought in engineering.
+          </div>
+        )}
+        {summary.cosmetics.length > 0 && (
+          <div className="unlock-note">
+            <span className="label">ADDED TO THE HANGAR</span>
+            {summary.cosmetics.map((id) => cosmetic(id)?.name ?? id).join(' · ')}
           </div>
         )}
         {summary.unlocked.length > 0 && (

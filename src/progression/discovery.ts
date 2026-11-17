@@ -23,6 +23,10 @@ export interface DiscoveryRecord {
 
 export interface DiscoveryLog {
   objects: Record<string, DiscoveryRecord>;
+  /** Star systems entered (ids from the system catalogue), kept apart from single objects. */
+  systems: Record<string, DiscoveryRecord>;
+  /** Names of real planets and moons encountered: present in a visited system, or surveyed. */
+  planets: string[];
   environments: string[];
   proceduralVisits: number;
   fictionalVisits: number;
@@ -32,7 +36,7 @@ export interface DiscoveryLog {
 }
 
 export function emptyLog(): DiscoveryLog {
-  return { objects: {}, environments: [], proceduralVisits: 0, fictionalVisits: 0, rareEncounters: 0, sectorsCleared: 0 };
+  return { objects: {}, systems: {}, planets: [], environments: [], proceduralVisits: 0, fictionalVisits: 0, rareEncounters: 0, sectorsCleared: 0 };
 }
 
 const count = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0);
@@ -42,11 +46,12 @@ export function sanitizeLog(raw: unknown): DiscoveryLog {
   const log = emptyLog();
   if (!raw || typeof raw !== 'object') return log;
   const r = raw as Partial<DiscoveryLog>;
-  if (r.objects && typeof r.objects === 'object') {
-    for (const [id, rec] of Object.entries(r.objects)) {
-      if (!rec || typeof rec !== 'object' || typeof id !== 'string') continue;
+  const records = (src: unknown, into: Record<string, DiscoveryRecord>, accept: (id: string) => boolean): void => {
+    if (!src || typeof src !== 'object') return;
+    for (const [id, rec] of Object.entries(src as Record<string, unknown>)) {
+      if (!rec || typeof rec !== 'object' || typeof id !== 'string' || !accept(id)) continue;
       const d = rec as Partial<DiscoveryRecord>;
-      log.objects[id] = {
+      into[id] = {
         sector: Math.max(1, count(d.sector)),
         at: typeof d.at === 'string' ? d.at : '',
         visits: Math.max(1, count(d.visits)),
@@ -54,7 +59,10 @@ export function sanitizeLog(raw: unknown): DiscoveryLog {
         orbit: typeof d.orbit === 'string' ? d.orbit : '',
       };
     }
-  }
+  };
+  records(r.objects, log.objects, (id) => !id.startsWith('sys:'));
+  records(r.systems, log.systems, (id) => id.startsWith('sys:'));
+  if (Array.isArray(r.planets)) log.planets = [...new Set(r.planets.filter((p): p is string => typeof p === 'string' && p.length > 0 && p.length < 80))];
   if (Array.isArray(r.environments)) log.environments = [...new Set(r.environments.filter((e): e is string => typeof e === 'string'))];
   log.proceduralVisits = count(r.proceduralVisits);
   log.fictionalVisits = count(r.fictionalVisits);
@@ -63,7 +71,7 @@ export function sanitizeLog(raw: unknown): DiscoveryLog {
   return log;
 }
 
-/** Record entering a sector. Mutates `log`; returns true when a catalogued object is new. */
+/** Record entering a sector. Mutates `log`; returns true when a catalogued object or star system is new. */
 export function recordVisit(log: DiscoveryLog, identity: LevelIdentity, sector: number, now: string): boolean {
   if (!log.environments.includes(identity.environment)) log.environments.push(identity.environment);
   if (identity.rarity === 'rare' || identity.rarity === 'legendary') log.rareEncounters++;
@@ -75,6 +83,17 @@ export function recordVisit(log: DiscoveryLog, identity: LevelIdentity, sector: 
     log.fictionalVisits++;
     return false;
   }
+  if (identity.systemId) {
+    // A star system: logged in its own table, and its known planets count as encountered.
+    for (const p of identity.planets ?? []) if (!log.planets.includes(p)) log.planets.push(p);
+    const seen = log.systems[identity.systemId];
+    if (seen) {
+      seen.visits++;
+      return false;
+    }
+    log.systems[identity.systemId] = { sector, at: now, visits: 1, env: identity.environment, orbit: identity.orbitLabel };
+    return true;
+  }
   const existing = log.objects[identity.objectId];
   if (existing) {
     existing.visits++;
@@ -85,7 +104,7 @@ export function recordVisit(log: DiscoveryLog, identity: LevelIdentity, sector: 
 }
 
 export function progressFrom(log: DiscoveryLog): PlayerProgress {
-  return { discovered: new Set(Object.keys(log.objects)), environmentsSeen: new Set(log.environments) };
+  return { discovered: new Set([...Object.keys(log.objects), ...Object.keys(log.systems)]), environmentsSeen: new Set(log.environments) };
 }
 
 export interface CategoryProgress {

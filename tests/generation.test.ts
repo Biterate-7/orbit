@@ -1,3 +1,5 @@
+import { getSystems } from '../src/astronomy/systems/store';
+import { systemPools } from '../src/generation/environments';
 import { describe, expect, it } from 'vitest';
 import { getCatalogue } from '../src/astronomy/database/catalogue';
 import type { LevelDef } from '../src/game/types';
@@ -112,7 +114,15 @@ describe('1,200 seeded levels', () => {
     for (const l of LEVELS) {
       const id = l.identity;
       const env = environment(id.environment as Parameters<typeof environment>[0]);
-      if (id.kind === 'REAL OBJECT') {
+      if (id.systemId) {
+        // System environments are hosted by a star-system record that fits them, with its source named.
+        const sys = getSystems().get(id.systemId);
+        expect(sys, l.code).toBeDefined();
+        expect(env.systemHosts?.(sys!), l.code).toBe(true);
+        expect(id.kind, l.code).toBe('REAL OBJECT');
+        expect(id.source, l.code).toBeTruthy();
+        expect(id.objectName, l.code).toBe(sys!.name);
+      } else if (id.kind === 'REAL OBJECT') {
         const o = cat.get(id.objectId);
         expect(o, l.code).toBeDefined();
         expect(id.source, l.code).toBeTruthy();
@@ -166,6 +176,12 @@ describe('environment identity', () => {
     // verified as a triple: that environment is always a procedural variant, and says so.
     const unverifiable = new Set(['multiple_star']);
     for (const env of ENVIRONMENTS) {
+      // System environments draw on the star-system catalogue instead.
+      if (env.systemHosts) {
+        expect(pools.get(env.id), env.id).toHaveLength(0);
+        expect(systemPools(getSystems()).get(env.id)!.length, env.id).toBeGreaterThan(0);
+        continue;
+      }
       if (env.fictional || unverifiable.has(env.id)) expect(pools.get(env.id), env.id).toHaveLength(0);
       else expect(pools.get(env.id)!.length, env.id).toBeGreaterThan(0);
     }

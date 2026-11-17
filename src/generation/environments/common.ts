@@ -13,6 +13,7 @@ import type { AstroObject } from '../../astronomy/database/schema';
 import { blackbodyHex, mixHex, renderTemperature, shade } from '../../astronomy/database/visuals';
 import { TAU } from '../../game/math';
 import type { Rng } from '../../game/rng';
+import type { StarSystem } from '../../astronomy/systems/types';
 import type { BodyKind, BodyLook, CompanionSpec, EnvFamily, LevelMechanics, ModifierKind, Rarity, SurfaceStyle } from '../../game/types';
 
 export type EnvId =
@@ -44,7 +45,10 @@ export type EnvId =
   | 'nebula'
   | 'asteroid_field'
   | 'comet_region'
-  | 'anomaly';
+  | 'anomaly'
+  | 'star_system'
+  | 'circumbinary'
+  | 'companion_star';
 
 export interface EnvContext {
   rng: Rng;
@@ -52,6 +56,8 @@ export interface EnvContext {
   /** Real host object, or null for a procedural / fictional setting. */
   object: AstroObject | null;
   catalogue: Catalogue;
+  /** Real star system hosting the level (system environments only), else null. */
+  system?: StarSystem | null;
 }
 
 export interface BodyBlueprint {
@@ -112,6 +118,8 @@ export interface EnvironmentDef {
   variantClass: string;
   /** True for invented settings that have no real-world counterpart. */
   fictional?: boolean;
+  /** System environments are hosted by a star-system record instead of a catalogue object. */
+  systemHosts?: (s: StarSystem) => boolean;
   build: (ctx: EnvContext) => EnvBlueprint;
 }
 
@@ -134,6 +142,7 @@ export const NO_MECHANICS: LevelMechanics = {
   muWobble: null,
   waveStrength: 1,
   flareRate: 1,
+  stream: null,
 };
 
 // ------------------------------------------------------------------ scaling helpers

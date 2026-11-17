@@ -4,13 +4,14 @@ import { orbitInfo, predictTrajectory } from '../src/game/orbital';
 import { NO_CONTROLS } from '../src/game/player';
 import { Run } from '../src/game/run';
 import type { RunSink } from '../src/game/run';
-import { CURRICULUM, MISSION_ORDER, MISSIONS, NORMAL_MISSIONS } from '../src/game/missions/catalog';
+import { MISSION_ORDER, MISSIONS } from '../src/game/missions/catalog';
 import { wormholeVelocity } from '../src/game/missions/runtime';
-import type { MissionDebrief, MissionKind } from '../src/game/missions/types';
+import type { MissionDebrief, MissionKind, MutatorId } from '../src/game/missions/types';
 import { betterRank, defaultSave } from '../src/game/persistence';
 import { scoreMultiplier } from '../src/game/modifiers';
 import { generateLevelFromSeed, levelFromCode } from '../src/generation/levelGenerator';
-import { missionForSector } from '../src/generation/missionSchedule';
+import { DIRECTOR, NEW_PLAYER, bossSectors, earliestSector, missionForSector, previewRun, tierAt, tierFor } from '../src/generation/missionDirector';
+import { rewardFor } from '../src/generation/missionGenerator';
 import { flyMission, missionLevel, stagedRunPilot } from './missionHarness';
 import type { PilotState } from './missionHarness';
 
@@ -24,45 +25,117 @@ function runFor(run: Run, seconds: number, controls = NO_CONTROLS): void {
   }
 }
 
-describe('mission schedule', () => {
-  const journey = (runSeed: number, n: number): MissionKind[] => {
-    const out: MissionKind[] = [];
-    for (let i = 1; i <= n; i++) out.push(missionForSector(runSeed, i, out).kind);
-    return out;
-  };
+describe('mission director', () => {
+  const journey = (runSeed: number, n: number, ctx = NEW_PLAYER): MissionKind[] => previewRun(runSeed, n, ctx).map((p) => p.kind);
 
-  it('opens with the curriculum: one new idea per sector, a major encounter every fifth', () => {
-    expect(journey(1, 15)).toEqual(CURRICULUM);
-    // Every mission type is met within the first 15 sectors.
-    for (const k of MISSION_ORDER) expect(CURRICULUM, k).toContain(k);
-  });
-
-  it('keeps a boss every fifth sector, rotating, and never repeats a mission back to back', () => {
-    for (const seed of [1, 2, 3, 99, 4242]) {
-      const j = journey(seed, 120);
-      for (let i = 0; i < j.length; i++) {
-        const sector = i + 1;
-        expect(MISSIONS[j[i]].boss, `sector ${sector}`).toBe(sector % 5 === 0);
-        if (i > 0) expect(j[i], `sector ${sector}`).not.toBe(j[i - 1]);
-      }
-      // After the curriculum every normal mission type keeps coming back.
-      const late = new Set(j.slice(15));
-      for (const k of NORMAL_MISSIONS) expect(late.has(k), k).toBe(true);
+  it('has no fixed sequence: different runs open differently', () => {
+    const openings = new Set<string>();
+    for (let seed = 1; seed <= 40; seed++) openings.add(journey(seed, 8).join('>'));
+    expect(openings.size).toBeGreaterThanOrEqual(38);
+    // No sector of the opening is pinned to one mission type across runs.
+    for (let sector = 1; sector <= 8; sector++) {
+      const kinds = new Set<MissionKind>();
+      for (let seed = 1; seed <= 60; seed++) kinds.add(journey(seed, 8)[sector - 1]);
+      expect(kinds.size, `sector ${sector}`).toBeGreaterThanOrEqual(3);
     }
   });
 
-  it('escalates tiers: later appearances combine more mechanics', () => {
-    expect(missionForSector(1, 2).tier).toBe(1);
-    expect(missionForSector(1, 12).tier).toBe(2);
-    expect(missionForSector(1, 5).tier).toBe(1);
-    expect(missionForSector(1, 20).tier).toBe(2);
-    expect(missionForSector(1, 35).tier).toBeGreaterThanOrEqual(3);
-    // Tier-2 layouts carry mechanics tier 1 does not.
-    const t1 = missionLevel('precision', 1, 5).mission;
-    const t2 = missionLevel('precision', 2, 5).mission;
-    expect(t2.gates.length).toBeGreaterThan(t1.gates.length);
-    expect(t2.fields.length).toBeGreaterThan(0);
-    expect(missionLevel('asteroid_run', 2, 5).mission.wormholes.length).toBe(1);
+  it('is reproducible: the same seed and history always give the same mission', () => {
+    for (const seed of [7, 4242, 0xdeadbeef]) expect(previewRun(seed, 60)).toEqual(previewRun(seed, 60));
+  });
+
+  it('never repeats a mission back to back and honours every cool-down', () => {
+    for (const seed of [1, 2, 3, 99, 4242]) {
+      const j = journey(seed, 150);
+      for (let i = 1; i < j.length; i++) {
+        expect(j[i], `sector ${i + 1}`).not.toBe(j[i - 1]);
+        const info = MISSIONS[j[i]];
+        if (!info.boss && info.cooldown > 0) expect(j.slice(Math.max(0, i - info.cooldown), i), `${j[i]} at sector ${i + 1}`).not.toContain(j[i]);
+      }
+    }
+  });
+
+  it('tours the whole registry: every mission type keeps coming up', () => {
+    const seen = new Map<MissionKind, number>();
+    for (let seed = 1; seed <= 12; seed++) for (const k of journey(seed, 120)) seen.set(k, (seen.get(k) ?? 0) + 1);
+    for (const k of MISSION_ORDER) expect(seen.get(k) ?? 0, k).toBeGreaterThan(0);
+    // Rare missions really are rarer than common ones.
+    expect(seen.get('discovery') ?? 0).toBeLessThan(seen.get('precision') ?? 0);
+  });
+
+  it('schedules major encounters at varying intervals, never the same one twice running', () => {
+    const gaps = new Set<number>();
+    const firsts = new Set<number>();
+    for (let seed = 1; seed <= 30; seed++) {
+      const sectors = bossSectors(seed, 140);
+      const j = journey(seed, 140);
+      firsts.add(sectors[0]);
+      expect(sectors[0]).toBeGreaterThanOrEqual(DIRECTOR.firstBoss[0]);
+      expect(sectors[0]).toBeLessThanOrEqual(DIRECTOR.firstBoss[1]);
+      for (let i = 1; i < sectors.length; i++) {
+        const gap = sectors[i] - sectors[i - 1];
+        gaps.add(gap);
+        expect(gap).toBeGreaterThanOrEqual(DIRECTOR.bossGap[0]);
+        expect(gap).toBeLessThanOrEqual(DIRECTOR.bossGap[1]);
+      }
+      // Exactly the scheduled sectors are bosses.
+      for (let i = 0; i < j.length; i++) expect(MISSIONS[j[i]].boss, `seed ${seed} sector ${i + 1}`).toBe(sectors.includes(i + 1));
+      const faced = j.filter((k) => MISSIONS[k].boss);
+      for (let i = 1; i < faced.length; i++) expect(faced[i]).not.toBe(faced[i - 1]);
+    }
+    // Not a fixed beat: several different gaps and several different first sectors occur.
+    expect(gaps.size).toBeGreaterThanOrEqual(3);
+    expect(firsts.size).toBeGreaterThanOrEqual(3);
+  });
+
+  it('considers the pilot: a first-ever sector is gentle and plain, a veteran meets more, sooner', () => {
+    for (let seed = 1; seed <= 60; seed++) {
+      const first = missionForSector(seed, 1, [], NEW_PLAYER);
+      expect(MISSIONS[first.kind].gentle, first.kind).toBe(true);
+      expect(first.mutators).toEqual([]);
+      expect(first.variant).toBe('standard');
+    }
+    const veteran = { experience: 200 };
+    const early = (ctx: typeof veteran): Set<MissionKind> => new Set(Array.from({ length: 80 }, (_, i) => missionForSector(i + 1, 2, ['survival'], ctx).kind));
+    expect(early(veteran).size).toBeGreaterThan(early(NEW_PLAYER).size);
+    expect(earliestSector('event_horizon', veteran)).toBeLessThan(earliestSector('event_horizon', NEW_PLAYER));
+  });
+
+  it('scales difficulty with depth: tiers rise, twists and variants become more common', () => {
+    expect(tierAt(2)).toBe(1);
+    expect(tierAt(12)).toBe(2);
+    expect(tierAt(30)).toBeGreaterThanOrEqual(3);
+    const twists = (from: number, to: number): number => {
+      let n = 0;
+      let total = 0;
+      for (let seed = 1; seed <= 40; seed++) {
+        const run = previewRun(seed, to);
+        for (let i = from - 1; i < to; i++) {
+          if (MISSIONS[run[i].kind].boss) continue;
+          total++;
+          n += run[i].mutators?.length ?? 0;
+        }
+      }
+      return n / total;
+    };
+    expect(twists(20, 30)).toBeGreaterThan(twists(1, 8) * 1.5);
+    // Rare variants exist but stay uncommon.
+    const variants = new Map<string, number>();
+    for (let seed = 1; seed <= 60; seed++) for (const p of previewRun(seed, 40)) variants.set(p.variant ?? 'standard', (variants.get(p.variant ?? 'standard') ?? 0) + 1);
+    for (const v of ['elite', 'pristine', 'anomalous']) expect(variants.get(v) ?? 0, v).toBeGreaterThan(0);
+    expect((variants.get('standard') ?? 0) / (60 * 40)).toBeGreaterThan(0.7);
+    // A boss returns a tier stronger each time it has already been met in the run.
+    expect(tierFor('boss_neutron', 30, ['boss_neutron', 'survival', 'boss_devourer', 'boss_neutron'])).toBe(3);
+  });
+
+  it('only adds twists a mission supports, and pays more for harder sectors', () => {
+    for (let seed = 1; seed <= 30; seed++) {
+      for (const p of previewRun(seed, 40)) for (const m of p.mutators ?? []) expect(MISSIONS[p.kind].mutators, `${p.kind} + ${m}`).toContain(m);
+    }
+    expect(rewardFor('precision', 1, [], 'standard')).toBe(1);
+    expect(rewardFor('precision', 2, ['mined'], 'elite')).toBeGreaterThan(rewardFor('precision', 2, [], 'standard'));
+    expect(rewardFor('boss_neutron', 1, [], 'standard')).toBeGreaterThan(rewardFor('anomaly', 1, [], 'standard'));
+    expect(rewardFor('survival', 1, ['aegis'], 'standard')).toBeLessThan(1);
   });
 
   it('sets every mission in an environment it suits', () => {
@@ -75,15 +148,36 @@ describe('mission schedule', () => {
     }
   });
 
-  it('rebuilds any mission sector exactly from its code', () => {
+  it('rebuilds any mission sector exactly from its code, twists and variant included', () => {
     for (const kind of MISSION_ORDER) {
       const l = missionLevel(kind, 2, 1234);
       if (kind !== 'survival') expect(l.code).toMatch(new RegExp(`-${MISSIONS[kind].code}2$`));
       expect(levelFromCode(l.code)).toEqual(l);
     }
-    // Old (survival) codes keep working.
+    const twisted = generateLevelFromSeed(555, 14, new Set(), undefined, { kind: 'precision', tier: 2, mutators: ['magnetic', 'mined', 'salvage'], variant: 'elite' });
+    expect(twisted.code).toMatch(/-PN2E\+GMV$/);
+    expect(twisted.mission.mutators).toEqual(['magnetic', 'mined', 'salvage']);
+    expect(levelFromCode(twisted.code)).toEqual(twisted);
+    const storm = generateLevelFromSeed(77, 9, new Set(), undefined, { kind: 'survival', tier: 1, mutators: ['storm'], variant: 'standard' });
+    expect(storm.code).toMatch(/-SV\d\+S$/);
+    expect(levelFromCode(storm.code)).toEqual(storm);
+    // Old (plain survival) codes keep working.
     const old = generateLevelFromSeed(77, 9);
+    expect(old.code).not.toContain('-SV');
     expect(levelFromCode(old.code)).toEqual(old);
+  });
+
+  it('twists change what is in the sector', () => {
+    const base = generateLevelFromSeed(91, 10, new Set(), undefined, { kind: 'mining', tier: 1 });
+    const with_ = (m: MutatorId) => generateLevelFromSeed(91, 10, new Set(), undefined, { kind: 'mining', tier: 1, mutators: [m] });
+    expect(with_('mined').mission.mines.length).toBeGreaterThan(base.mission.mines.length);
+    expect(with_('magnetic').mission.fields.length).toBe(2);
+    expect(with_('storm').modifiers).toEqual(expect.arrayContaining(['flares', 'waves']));
+    expect(with_('rich').energyRichness).toBeGreaterThan(base.energyRichness);
+    expect(with_('aegis').mission.pickups.some((p) => p.kind === 'aegis')).toBe(true);
+    expect(with_('dense').mission.ambient).toBeGreaterThan(base.mission.ambient);
+    // The base layout is untouched by a twist: same ore rocks either way.
+    expect(with_('mined').mission.targets).toEqual(base.mission.targets);
   });
 
   it('gives each mission its own objective layout', () => {
@@ -98,7 +192,26 @@ describe('mission schedule', () => {
     expect(m('event_horizon').params.growth).toBeGreaterThan(0);
     expect(m('extraction').targets[0].kind).toBe('dock');
     expect(m('boss_neutron').targets.length).toBe(5);
-    for (const k of MISSION_ORDER) expect(m(k).orbitRule === 'free').toBe(['asteroid_run', 'slingshot', 'event_horizon', 'nebula', 'pursuit', 'boss_devourer', 'boss_sentinel'].includes(k));
+    expect(m('binary_nav').gates.length).toBeGreaterThanOrEqual(5);
+    expect(missionLevel('binary_nav', 1, 3).mechanics.stream).not.toBeNull();
+    expect(missionLevel('flare_run', 1, 3).companions[0].kind).toBe('planet');
+    expect(m('flare_run').params.count).toBe(3);
+    expect(m('wormhole').wormholes.length).toBe(2);
+    expect(m('wormhole').fuel).toBeGreaterThan(0);
+    expect(m('anomaly').params.nodes.length).toBe(4);
+    expect(m('escort').targets[0].kind).toBe('convoy');
+    expect(m('mining').targets.filter((t) => t.kind === 'ore').length).toBe(5);
+    expect(m('mining').targets.filter((t) => t.rich).length).toBe(2);
+    expect(m('discovery').targets[0]).toMatchObject({ kind: 'signal', hidden: true });
+    expect(m('survey').targets.length).toBeGreaterThanOrEqual(2);
+    expect(m('survey').targets.every((t) => t.kind === 'scan')).toBe(true);
+    for (const k of MISSION_ORDER) expect(m(k).orbitRule === 'free', k).toBe(['asteroid_run', 'slingshot', 'event_horizon', 'nebula', 'pursuit', 'wormhole', 'boss_devourer', 'boss_sentinel'].includes(k));
+    // No two mission types share a layout signature.
+    const sig = (k: MissionKind): string => {
+      const s = m(k);
+      return [s.orbitRule, s.gates.length, s.targets.map((t) => t.kind).join(), s.wormholes.length, s.rockBelts.length, s.clouds.length > 0, s.waves.length, s.fuel > 0, s.params.nodes.length, s.params.count, s.params.chargeTime > 0, s.params.growth > 0, s.boss].join('|');
+    };
+    expect(new Set(MISSION_ORDER.map(sig)).size).toBe(MISSION_ORDER.length);
   });
 });
 

@@ -18,6 +18,14 @@ export type MissionKind =
   | 'event_horizon'
   | 'nebula'
   | 'pursuit'
+  | 'binary_nav'
+  | 'flare_run'
+  | 'wormhole'
+  | 'anomaly'
+  | 'escort'
+  | 'mining'
+  | 'discovery'
+  | 'survey'
   | 'boss_neutron'
   | 'boss_devourer'
   | 'boss_sentinel';
@@ -47,7 +55,12 @@ export interface GateSpec {
   oscPeriod: number;
 }
 
-export type TargetKind = 'gate' | 'beacon' | 'dock';
+/**
+ * gate / beacon / dock are the original three; the rest belong to the newer missions:
+ *   ore - a rock to mine, convoy - the ship being escorted, signal - a hidden source to find,
+ *   scan - a survey point riding with a planet or moon, relay - a navigation relay.
+ */
+export type TargetKind = 'gate' | 'beacon' | 'dock' | 'ore' | 'convoy' | 'signal' | 'scan' | 'relay';
 
 export interface TargetSpec {
   kind: TargetKind;
@@ -58,6 +71,12 @@ export interface TargetSpec {
   hidden: boolean;
   /** Boss phase (0-based) this target belongs to. */
   phase?: number;
+  /** Display name (a surveyed planet, a convoy call sign). */
+  label?: string;
+  /** Index of the level companion this target rides with (survey points), or -1. */
+  companion?: number;
+  /** Rich ore vein / high-value target. */
+  rich?: boolean;
 }
 
 export interface CloudSpec {
@@ -70,6 +89,8 @@ export interface WormholeSpec {
   a: Anchor;
   b: Anchor;
   r: number;
+  /** The exit sets the ship on the circular orbit of the far mouth, whatever shape it came in on. */
+  circular?: boolean;
 }
 
 /** A magnetic region: velocity is rotated at `turn` rad/s while inside (v x B), sign = polarity. */
@@ -79,7 +100,8 @@ export interface FieldSpec {
   turn: number;
 }
 
-export type PickupKind = 'shard' | 'fuel' | 'aegis' | 'repair' | 'cell' | 'charge';
+/** cache = a hidden supply cache: invisible (and out of reach) without a Deep-Space Scanner. */
+export type PickupKind = 'shard' | 'fuel' | 'aegis' | 'repair' | 'cell' | 'charge' | 'cache';
 
 export interface PickupSpec {
   kind: PickupKind;
@@ -111,7 +133,8 @@ export interface WaveSpec {
   rate: number;
 }
 
-export type BonusId = 'nohit' | 'par' | 'shards' | 'assist' | 'fuel' | 'quota' | 'clean' | 'noburn' | 'kill' | 'deep';
+/** 'feat' and 'feat2' are mission-specific challenges; their wording lives in the BonusSpec label. */
+export type BonusId = 'nohit' | 'par' | 'shards' | 'assist' | 'fuel' | 'quota' | 'clean' | 'noburn' | 'kill' | 'deep' | 'feat' | 'feat2';
 
 export interface BonusSpec {
   id: BonusId;
@@ -148,7 +171,23 @@ export interface MissionParams {
   overheat: number;
   /** Nebula: mission-frame angle where the main corridor's burn begins. */
   mouth: number;
+  /** How many of the mission's things there are (superflares, rifts, ore loads, survey points). */
+  count: number;
+  /** A mission-specific reach: shadow half-width (rad), lane half-width, link range, signal range. */
+  range: number;
+  /** Seconds of hold / dwell the objective needs. */
+  hold: number;
+  /** Hit points of the thing being protected. */
+  hp: number;
+  /** Seconds between the mission's own events (superflares, lane shifts, raids). */
+  period: number;
 }
+
+/** Sector-wide twists the mission director can add on top of any mission. */
+export type MutatorId = 'storm' | 'lowfuel' | 'rich' | 'mined' | 'wormholes' | 'magnetic' | 'haste' | 'dense' | 'aegis' | 'salvage';
+
+/** standard = as generated. elite = a tier harder, pays more. pristine = untouched: more to find. anomalous = one more twist than usual. */
+export type VariantId = 'standard' | 'elite' | 'pristine' | 'anomalous';
 
 export interface MissionSpec {
   kind: MissionKind;
@@ -190,6 +229,11 @@ export interface MissionSpec {
   pickups: PickupSpec[];
   mines: MineSpec[];
   rockBelts: RockBeltSpec[];
+  /** Twists added by the mission director (empty for a plain sector). */
+  mutators: MutatorId[];
+  variant: VariantId;
+  /** Multiplier on the credits and score this sector pays (difficulty, variant and mutators). */
+  reward: number;
 }
 
 export type Rank = 'S' | 'A' | 'B' | 'C' | '-';
@@ -207,11 +251,37 @@ export interface MissionDebrief {
   time: number;
   par: number;
   damage: number;
-  bonuses: { label: string; done: boolean }[];
+  /** `feat` marks the mission's own challenge (as opposed to the shared ones: no damage, par, shards). */
+  bonuses: { label: string; done: boolean; feat?: boolean }[];
   shards: number;
   shardsTotal: number;
   score: number;
   key: number;
+  tier: number;
+  /** The sector's reward multiplier (difficulty, tier, variant, twists). */
+  reward: number;
+  /** Credits paid for the sector (filled in by the run). */
+  credits: number;
+  variant: VariantId;
+  mutators: MutatorId[];
+  /** Mission-specific tallies for the lifetime statistics. */
+  tally: MissionTally;
+}
+
+/** What a sector added to the things the profile counts. */
+export interface MissionTally {
+  /** Rocks mined out. */
+  mined: number;
+  /** Planets and moons surveyed (names, so a body is only counted once per sector). */
+  surveyed: string[];
+  /** Hidden signal sources located. */
+  signals: number;
+  /** Hidden caches recovered. */
+  caches: number;
+  /** Wormhole transits. */
+  transits: number;
+  /** Gravity assists flown. */
+  assists: number;
 }
 
 export interface BossHud {

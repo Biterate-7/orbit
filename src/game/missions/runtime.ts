@@ -24,6 +24,7 @@ import type {
   CloudSpec,
   MissionDebrief,
   MissionSpec,
+  MissionTally,
   ObjectiveHud,
   PickupKind,
   Rank,
@@ -67,6 +68,45 @@ export interface TargetRt {
   done: boolean;
   /** True while the predicted trajectory passes through it. */
   aligned: boolean;
+  /** Display name (surveyed world, convoy call sign). */
+  label?: string;
+  /** Index of the level companion it rides with, or undefined. */
+  companion?: number;
+  rich?: boolean;
+}
+
+/** A shaded sector the renderer draws: a shelter shadow, a danger cone. World frame, from (x, y). */
+export interface MissionWedge {
+  x: number;
+  y: number;
+  angle: number;
+  halfWidth: number;
+  r0: number;
+  r1: number;
+  color: string;
+  alpha: number;
+  label: string;
+}
+
+/** A line between two world points: shield link, mining laser, scan beam, collector tether. */
+export interface MissionLink {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  color: string;
+  alpha: number;
+  /** Draw as a woven lattice instead of a single line. */
+  lattice: boolean;
+}
+
+/** An annulus around the barycentre: a lane to hold. */
+export interface MissionLane {
+  r0: number;
+  r1: number;
+  color: string;
+  alpha: number;
+  label: string;
 }
 
 export interface PickupRt {
@@ -79,6 +119,8 @@ export interface PickupRt {
   respawn: number;
   timer: number;
   bob: number;
+  /** 0..1: how far a Quantum Collector has drawn it from its rail towards the ship. */
+  pull: number;
 }
 
 export interface MineRt {
@@ -99,6 +141,7 @@ export interface WormholeRt {
   anchorA: Anchor;
   anchorB: Anchor;
   spin: number;
+  circular: boolean;
 }
 
 export interface FieldRt {
@@ -194,6 +237,7 @@ const PICK_COLORS: Record<PickupKind, string> = {
   repair: PALETTE.green,
   cell: PALETTE.violet,
   charge: '#ff4d5e',
+  cache: '#fff3a8',
 };
 
 export const PICKUP_LABEL: Record<PickupKind, string> = {
@@ -203,6 +247,7 @@ export const PICKUP_LABEL: Record<PickupKind, string> = {
   repair: 'REPAIR',
   cell: 'ENERGY CELL',
   charge: 'CHARGE',
+  cache: 'SUPPLY CACHE',
 };
 
 export abstract class Mission {
@@ -247,6 +292,10 @@ export abstract class Mission {
   assisted = false;
   inCloud = false;
   alert = '';
+  /** Things this sector adds to the lifetime statistics. */
+  tally: MissionTally = { mined: 0, surveyed: [], signals: 0, caches: 0, transits: 0, assists: 0 };
+  /** Credits earned by what was found here (signals, caches), on top of the mission payout. */
+  bonusCredits = 0;
   boss: BossHud | null = null;
   protected bonusDone = new Set<BonusId>();
   private wormholeCd = 0;
@@ -310,12 +359,12 @@ export abstract class Mission {
       x2: 0,
       y2: 0,
     }));
-    this.targets = S.targets.map((t) => ({ kind: t.kind, anchor: t.anchor, r: t.r, x: 0, y: 0, vx: 0, vy: 0, hidden: t.hidden, phase: t.phase ?? 0, sync: 0, done: false, aligned: false }));
-    this.pickups = S.pickups.map((p) => ({ kind: p.kind, anchor: p.anchor, x: 0, y: 0, taken: false, respawn: 0, timer: 0, bob: Math.random() * TAU }));
+    this.targets = S.targets.map((t) => ({ kind: t.kind, anchor: t.anchor, r: t.r, x: 0, y: 0, vx: 0, vy: 0, hidden: t.hidden, phase: t.phase ?? 0, sync: 0, done: false, aligned: false, label: t.label, companion: t.companion, rich: t.rich }));
+    this.pickups = S.pickups.map((p) => ({ kind: p.kind, anchor: p.anchor, x: 0, y: 0, taken: false, respawn: 0, timer: 0, bob: Math.random() * TAU, pull: 0 }));
     this.shardsTotal = this.pickups.filter((p) => p.kind === 'shard').length;
     this.clouds = S.clouds.map((c) => ({ ...this.frameXY(c.x, c.y), r: c.r }));
     this.buoys = S.buoys.map((b) => ({ ...this.frameXY(b.x, b.y), alt: b.alt }));
-    this.wormholes = S.wormholes.map((w) => ({ ax: 0, ay: 0, bx: 0, by: 0, r: w.r, anchorA: w.a, anchorB: w.b, spin: 0 }));
+    this.wormholes = S.wormholes.map((w) => ({ ax: 0, ay: 0, bx: 0, by: 0, r: w.r, anchorA: w.a, anchorB: w.b, spin: 0, circular: w.circular ?? false }));
     this.fields = S.fields.map((f) => ({ x: 0, y: 0, r: f.r, turn: f.turn, anchor: f.anchor }));
     const tmp = { x: 0, y: 0 };
     const mu = this.run.level.orbitMu;
@@ -418,10 +467,12 @@ export abstract class Mission {
       tg.vx = -tmp.y * tg.anchor.omega;
       tg.vy = tmp.x * tg.anchor.omega;
     }
+    const ship = this.run.ship;
     for (const p of this.pickups) {
       this.place(p.anchor, t, tmp);
-      p.x = tmp.x;
-      p.y = tmp.y;
+      // A collected pull draws the pickup off its rail towards the ship.
+      p.x = tmp.x + (ship.x - tmp.x) * p.pull;
+      p.y = tmp.y + (ship.y - tmp.y) * p.pull;
     }
     for (const w of this.wormholes) {
       this.place(w.anchorA, t, tmp);
@@ -506,8 +557,11 @@ export abstract class Mission {
     const run = this.run;
     const s = run.ship;
     const reach = run.mods.pickupRadius + 4;
+    const M = run.mods.m;
     for (const p of this.pickups) {
       p.bob += dt * 4;
+      // Supply caches do not exist for a ship that cannot detect them.
+      if (p.kind === 'cache' && M.deepScan <= 0) continue;
       if (p.taken) {
         if (p.respawn > 0) {
           p.timer -= dt;
@@ -519,7 +573,11 @@ export abstract class Mission {
         }
         continue;
       }
-      if (Math.hypot(s.x - p.x, s.y - p.y) > reach + (p.kind === 'shard' ? 1 : 0)) continue;
+      const d = Math.hypot(s.x - p.x, s.y - p.y);
+      // Quantum Collector: anything in range (except a boss charge, which has to be fetched) is drawn in.
+      const collectR = p.kind === 'charge' ? 0 : p.kind === 'cache' && M.syn.has('prospector') ? Math.max(M.collectR, 30) * 1.6 : M.collectR;
+      p.pull = collectR > 0 && d < collectR ? Math.min(1, p.pull + dt * 1.5) : Math.max(0, p.pull - dt * 2);
+      if (d > reach + (p.kind === 'shard' ? 1 : 0)) continue;
       p.taken = true;
       p.timer = p.respawn;
       this.collect(p);
@@ -545,8 +603,8 @@ export abstract class Mission {
         run.addText(p.x, p.y - 8, '+FUEL', PALETTE.orange);
         break;
       case 'aegis':
-        this.aegisT = 7;
-        run.sink.message('AEGIS SHIELD · 7s · HEAT AND IMPACT PROOF', 'good');
+        this.aegisT = 7 + run.mods.m.aegisBonus;
+        run.sink.message(`AEGIS SHIELD · ${this.aegisT}s · HEAT AND IMPACT PROOF`, 'good');
         run.sink.sfx('shield');
         break;
       case 'repair':
@@ -558,6 +616,15 @@ export abstract class Mission {
         break;
       case 'charge':
         break;
+      case 'cache': {
+        const pay = Math.round(12 * (run.mods.m.syn.has('prospector') ? 1.5 : 1));
+        this.tally.caches++;
+        this.bonusCredits += pay;
+        run.score += 200;
+        run.addText(p.x, p.y - 8, `CACHE +${pay} CR`, '#fff3a8');
+        run.sink.message(`HIDDEN CACHE RECOVERED  +${pay} CR`, 'upgrade');
+        break;
+      }
     }
   }
 
@@ -572,9 +639,19 @@ export abstract class Mission {
           [w.bx, w.by, w.ax, w.ay],
         ]) {
           if (Math.hypot(s.x - fx, s.y - fy) > w.r) continue;
+          // A tuned throat only runs one way: its far mouth is an exit, not a way back.
+          if (w.circular && fx !== w.ax) continue;
           const ox = s.x;
           const oy = s.y;
           const v = wormholeVelocity(fx, fy, tx, ty, s.vx, s.vy);
+          if (w.circular) {
+            // A tuned throat: it releases the ship on the far mouth's own circular orbit.
+            const rt = Math.hypot(tx, ty) || 1;
+            const dir = Math.sign(s.x * s.vy - s.y * s.vx) || 1;
+            const vc = Math.sqrt(run.attractors[0].mu / rt) * dir;
+            v.x = (-ty / rt) * vc;
+            v.y = (tx / rt) * vc;
+          }
           s.vx = v.x;
           s.vy = v.y;
           const sp = Math.hypot(s.vx, s.vy) || 1;
@@ -583,6 +660,8 @@ export abstract class Mission {
           s.clearTrail();
           run.refreshGravity();
           this.wormholeCd = 1.2;
+          this.tally.transits++;
+          this.onTransit(this.wormholes.indexOf(w), fx === w.ax && fy === w.ay);
           run.flash = Math.max(run.flash, 0.35);
           run.sink.sfx('warp');
           run.rings.push({ x: ox, y: oy, r: 2, maxR: 30, t: 0, dur: 0.5, color: PALETTE.violet });
@@ -1035,6 +1114,12 @@ export abstract class Mission {
 
   // ------------------------------------------------------------------ hooks from the run
 
+  /** Called when a gravity wave shoves the ship (not when it is absorbed or phased through). */
+  onWave(): void {}
+
+  /** Called when the ship goes through wormhole `index`; `forward` = it entered by the first mouth. */
+  protected onTransit(_index: number, _forward: boolean): void {}
+
   /** Called when the ship loses hull. */
   onDamage(amount: number): void {
     if (this.run.phase === 'active' || this.run.phase === 'intro') this.damageTaken += amount;
@@ -1096,6 +1181,26 @@ export abstract class Mission {
     return [];
   }
 
+  /** Shaded sectors to draw (shelter shadows). */
+  wedges(): MissionWedge[] {
+    return [];
+  }
+
+  /** Lanes to draw (resonance lanes). */
+  lanes(): MissionLane[] {
+    return [];
+  }
+
+  /** Lines to draw. The base adds what the fitted modules show: collector tethers and scanned wormhole routes. */
+  links(): MissionLink[] {
+    const out: MissionLink[] = [];
+    const s = this.run.ship;
+    const M = this.run.mods.m;
+    if (M.collectR > 0) for (const p of this.pickups) if (!p.taken && p.pull > 0.02) out.push({ x1: s.x, y1: s.y, x2: p.x, y2: p.y, color: PALETTE.violet, alpha: 0.3 + 0.5 * p.pull, lattice: false });
+    if (M.deepScan > 0) for (const w of this.wormholes) out.push({ x1: w.ax, y1: w.ay, x2: w.bx, y2: w.by, color: '#fff3a8', alpha: 0.22, lattice: false });
+    return out;
+  }
+
   protected bonusState(id: BonusId): 0 | 1 | 2 {
     switch (id) {
       case 'nohit':
@@ -1138,7 +1243,7 @@ export abstract class Mission {
   debrief(key: number): MissionDebrief {
     const S = this.spec;
     const success = this.complete && !this.failure;
-    const bonuses = S.bonus.map((b) => ({ label: b.label, done: this.bonusState(b.id) === 1 }));
+    const bonuses = S.bonus.map((b) => ({ label: b.label, done: this.bonusState(b.id) === 1, feat: b.id === 'feat' || b.id === 'feat2' }));
     let rank: Rank = '-';
     let pts = 0;
     if (success) {
@@ -1150,7 +1255,11 @@ export abstract class Mission {
       rank = pts >= 88 ? 'S' : pts >= 70 ? 'A' : pts >= 52 ? 'B' : 'C';
     }
     const mult = { S: 2.2, A: 1.6, B: 1.25, C: 1, '-': 0.3 }[rank];
-    const score = Math.round(200 * (1 + 0.25 * (this.run.levelIndex - 1)) * mult * (S.boss ? 1.6 : 1));
+    const score = Math.round(200 * (1 + 0.25 * (this.run.levelIndex - 1)) * mult * (S.boss ? 1.6 : Math.max(1, S.reward)));
+    // Credits: the sector's reward multiplier, how well it was flown, how deep the run is - plus finds.
+    const rankPay = { S: 1.5, A: 1.25, B: 1.1, C: 1, '-': 0.3 }[rank];
+    const depth = Math.min(2, 1 + 0.03 * (this.run.levelIndex - 1));
+    const credits = Math.round((14 * S.reward * rankPay * depth + this.shards * 4 + this.bonusCredits) * this.run.mods.creditMul);
     return {
       index: this.run.levelIndex,
       kind: S.kind,
@@ -1167,6 +1276,12 @@ export abstract class Mission {
       shardsTotal: this.shardsTotal,
       score,
       key,
+      tier: S.tier,
+      reward: S.reward,
+      credits,
+      variant: S.variant,
+      mutators: [...S.mutators],
+      tally: { ...this.tally, surveyed: [...this.tally.surveyed] },
     };
   }
 

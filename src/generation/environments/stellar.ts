@@ -381,7 +381,7 @@ export const STELLAR: EnvironmentDef[] = [
         interval: [3.1, 2.0],
         native: ['flares'],
         compatible: ['asteroids', 'comets', 'waves', 'debris', 'belt'],
-        mechanics: {},
+        mechanics: { stream: { period: 11, halfWidth: 0.2 } },
         ...accentFor(teff),
         nebula: tints(teff),
         tagline: 'TWO STARS, ONE ORBIT. THE PULL NEVER SITS STILL.',

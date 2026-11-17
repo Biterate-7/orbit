@@ -9,7 +9,11 @@ import { STELLAR } from './stellar';
 export type { EnvBlueprint, EnvContext, EnvId, EnvironmentDef } from './common';
 export { primaryEnvironment } from './classify';
 
-export const ENVIRONMENTS: readonly EnvironmentDef[] = [...PLANETARY, ...STELLAR, ...EXTREME];
+import { SYSTEMS } from './systems';
+import type { SystemCatalogue } from '../../astronomy/systems/store';
+import type { StarSystem } from '../../astronomy/systems/types';
+
+export const ENVIRONMENTS: readonly EnvironmentDef[] = [...PLANETARY, ...STELLAR, ...EXTREME, ...SYSTEMS];
 
 const BY_ID = new Map<EnvId, EnvironmentDef>(ENVIRONMENTS.map((e) => [e.id, e]));
 
@@ -35,5 +39,17 @@ export function hostPools(catalogue: Catalogue): Map<EnvId, AstroObject[]> {
     }
     pools.set(catalogue, map);
   }
+  return map;
+}
+
+const systemPoolCache = new WeakMap<SystemCatalogue, { revision: number; map: Map<EnvId, StarSystem[]> }>();
+
+/** Star systems that can host each system environment (recomputed when live imports change the catalogue). */
+export function systemPools(systems: SystemCatalogue): Map<EnvId, StarSystem[]> {
+  const hit = systemPoolCache.get(systems);
+  if (hit && hit.revision === systems.revision) return hit.map;
+  const map = new Map<EnvId, StarSystem[]>();
+  for (const e of ENVIRONMENTS) if (e.systemHosts) map.set(e.id, systems.systems.filter(e.systemHosts));
+  systemPoolCache.set(systems, { revision: systems.revision, map });
   return map;
 }

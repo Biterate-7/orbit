@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import { ICONS } from '../game/icons';
+import { EXTRA_ICONS } from '../game/iconsExtra';
 
 interface Props {
   name: string;
@@ -11,7 +12,7 @@ interface Props {
 
 /** Renders one of the shared 9x9 pixel icons as a crisp SVG. */
 export const PixelIcon = memo(function PixelIcon({ name, color, size = 27, highlight = '#ffffff', dim = '#4b5a80' }: Props) {
-  const map = ICONS[name] ?? ICONS.lock;
+  const map = ICONS[name] ?? EXTRA_ICONS[name] ?? ICONS.lock;
   const rects: JSX.Element[] = [];
   map.forEach((row, y) => {
     row.split('').forEach((ch, x) => {

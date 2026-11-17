@@ -9,26 +9,32 @@ import { environment, primaryEnvironment } from '../generation/environments';
 import { discoveryStats } from '../progression/discovery';
 import { isComplete, MILESTONES } from '../progression/milestones';
 import { environmentEntries } from '../progression/unlocks';
+import type { StarSystem } from '../astronomy/systems/types';
+import type { Progression } from '../progression/service';
 import { useKeys } from './hooks';
 import { Portrait } from './Portrait';
+import { SystemsTab } from './SystemsTab';
 
 interface Props {
   save: SaveData;
+  progress: Progression;
+  /** Fly one sector in a chosen star system. */
+  onFly: (system: StarSystem) => void;
   onBack: () => void;
   sfx: (n: SfxName) => void;
 }
 
-type Tab = 'objects' | 'environments' | 'milestones';
+type Tab = 'systems' | 'objects' | 'environments' | 'milestones';
 const LIST_LIMIT = 120;
 
 /**
  * The celestial catalogue: an old survey-computer view of everything the player has encountered.
  * Only objects that have actually been met are listed; the rest of the database stays dark.
  */
-export function Catalogue({ save, onBack, sfx }: Props) {
+export function Catalogue({ save, progress, onFly, onBack, sfx }: Props) {
   const catalogue = getCatalogue();
   const log = save.journey;
-  const [tab, setTab] = useState<Tab>('objects');
+  const [tab, setTab] = useState<Tab>('systems');
   const [category, setCategory] = useState<AstroCategory | null>(null);
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -55,7 +61,7 @@ export function Catalogue({ save, onBack, sfx }: Props) {
         <div className="cat-head">
           <div>
             <h2 className="panel-title">CELESTIAL CATALOGUE</h2>
-            <p className="panel-sub">SURVEY DATABASE · {catalogue.size.toLocaleString('en-US')} OBJECTS ON FILE · SNAPSHOT {catalogue.generatedAt.slice(0, 10)}</p>
+            <p className="panel-sub">SURVEY DATABASE · {catalogue.size.toLocaleString('en-US')} OBJECTS ON FILE · SNAPSHOT {catalogue.generatedAt.slice(0, 10)} · REAL DATA FROM NASA, JPL AND CDS</p>
           </div>
           <div className="cat-count">
             <div className="label">ENCOUNTERED</div>
@@ -67,12 +73,14 @@ export function Catalogue({ save, onBack, sfx }: Props) {
         </div>
 
         <div className="cat-tabs" role="tablist">
-          {(['objects', 'environments', 'milestones'] as Tab[]).map((t) => (
+          {(['systems', 'objects', 'environments', 'milestones'] as Tab[]).map((t) => (
             <button key={t} role="tab" aria-selected={tab === t} className={`cat-tab${tab === t ? ' on' : ''}`} onClick={pick(() => setTab(t))}>
-              {t.toUpperCase()}
+              {t === 'systems' ? 'STAR SYSTEMS' : t.toUpperCase()}
             </button>
           ))}
         </div>
+
+        {tab === 'systems' && <SystemsTab save={save} progress={progress} onFly={onFly} sfx={sfx} />}
 
         {tab === 'objects' && (
           <div className="cat-body">
@@ -145,7 +153,7 @@ export function Catalogue({ save, onBack, sfx }: Props) {
           <div className="cat-miles">
             {MILESTONES.map((m) => {
               const ctx = { log, highestLevel: save.records.highestLevel };
-              const done = save.milestones.includes(m.id) || isComplete(m, ctx);
+              const done = m.id in save.achievements || isComplete(m, ctx);
               const [cur, target] = m.progress(ctx);
               return (
                 <div key={m.id} className={`mile${done ? ' done' : ''}`}>

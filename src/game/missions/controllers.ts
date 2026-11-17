@@ -13,11 +13,12 @@ import { LULL } from '../../generation/missionGenerator';
 import { Enemy, Mission } from './runtime';
 import type { PickupRt, TargetRt } from './runtime';
 import type { MissionSpec } from './types';
+import { AnomalyMission, BinaryNavMission, DiscoveryMission, EscortMission, FlareRunMission, MiningMission, SurveyMission, WormholeMission } from './controllersExtra';
 
 const pct = (v: number): string => `${Math.floor(clamp(v, 0, 1) * 100)}%`;
 
 /** Distance from the ship to a point. */
-function distTo(run: Run, x: number, y: number): number {
+export function distTo(run: Run, x: number, y: number): number {
   return Math.hypot(run.ship.x - x, run.ship.y - y);
 }
 
@@ -126,7 +127,7 @@ export function canLock(run: Run, tg: TargetRt, captureR: number): boolean {
  * spring towards the target would be wrong here - pulling a ship that sits below a target
  * backwards lowers its orbit and opens the gap - so the beam matches the orbit instead.
  */
-function dockPull(run: Run, tg: TargetRt, strength: number, out: { x: number; y: number }): void {
+export function dockPull(run: Run, tg: TargetRt, strength: number, out: { x: number; y: number }): void {
   const s = run.ship;
   // Hold a true circular orbit at the ship's own radius (so letting go leaves a clean orbit), and
   // drift it in radius and in phase towards the target.
@@ -304,6 +305,7 @@ class SlingshotMission extends ReachMission {
         this.entry[i] = NaN;
         if (gain > 0.06) {
           this.assisted = true;
+          this.tally.assists++;
           const p = Math.round(gain * 100);
           run.sink.message(`GRAVITY ASSIST · +${p}% ORBITAL ENERGY`, 'good');
           run.sink.sfx('upgrade');
@@ -646,6 +648,7 @@ class DevourerBoss extends Mission {
       respawn: 0,
       timer: 0,
       bob: 0,
+      pull: 0,
     });
   }
 
@@ -957,6 +960,22 @@ export function createMission(run: Run, spec: MissionSpec): Mission {
       return new NebulaMission(run, spec);
     case 'pursuit':
       return new PursuitMission(run, spec);
+    case 'binary_nav':
+      return new BinaryNavMission(run, spec);
+    case 'flare_run':
+      return new FlareRunMission(run, spec);
+    case 'wormhole':
+      return new WormholeMission(run, spec);
+    case 'anomaly':
+      return new AnomalyMission(run, spec);
+    case 'escort':
+      return new EscortMission(run, spec);
+    case 'mining':
+      return new MiningMission(run, spec);
+    case 'discovery':
+      return new DiscoveryMission(run, spec);
+    case 'survey':
+      return new SurveyMission(run, spec);
     case 'boss_neutron':
       return new NeutronBoss(run, spec);
     case 'boss_devourer':
@@ -969,3 +988,4 @@ export function createMission(run: Run, spec: MissionSpec): Mission {
 }
 
 export { DevourerBoss };
+export { AnomalyMission, BinaryNavMission, DiscoveryMission, EscortMission, FlareRunMission, MiningMission, SurveyMission, WormholeMission };
